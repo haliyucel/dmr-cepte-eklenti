@@ -1,0 +1,4 @@
+vocoder_plugin.android.* binary
+*.so binary
+*.sh text eol=lf
+SHA256SUMS text eol=lf
