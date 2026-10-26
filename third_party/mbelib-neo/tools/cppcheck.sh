@@ -1,0 +1,227 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+# Run cppcheck locally for static analysis:
+# - Analyzes C/C++ sources with project-specific settings
+# - Complements clang-tidy with different analysis techniques
+# - Fails on error-level issues; warnings are informational
+
+ROOT_DIR=$(git rev-parse --show-toplevel 2> /dev/null || pwd)
+cd "$ROOT_DIR"
+
+if ! command -v cppcheck > /dev/null 2>&1; then
+  echo "cppcheck not found. Please install it (e.g., apt-get install cppcheck)." >&2
+  exit 1
+fi
+
+# Parse arguments
+usage() {
+  cat << 'USAGE'
+Usage: tools/cppcheck.sh [--strict] [--verbose|-v] [--] [files...]
+
+Options:
+  --strict    Enable all checks, inconclusive findings, and exhaustive value-flow;
+              treat findings as errors.
+  --verbose   Show detailed output during analysis.
+
+Arguments:
+  files...    Optional list of translation units to analyze (e.g., src/foo.c).
+              When omitted, analyzes the src/, include/, and fuzz/ trees plus
+              the C quality tools under tools/quality/.
+
+Environment:
+  CPPCHECK_BUILD_DIR   Build/cache directory used by cppcheck
+                       for cross-translation-unit state (default: .cppcheck-build;
+                       --strict defaults to a fresh temporary directory).
+USAGE
+}
+
+STRICT=0
+VERBOSE=0
+REQUESTED_FILES=()
+while [[ $# -gt 0 ]]; do
+  case "$1" in
+    --strict)
+      STRICT=1
+      shift
+      ;;
+    --verbose | -v)
+      VERBOSE=1
+      shift
+      ;;
+    --help | -h)
+      usage
+      exit 0
+      ;;
+    --)
+      shift
+      REQUESTED_FILES+=("$@")
+      break
+      ;;
+    *)
+      if [[ "$1" == -* ]]; then
+        echo "Unknown option: $1" >&2
+        usage >&2
+        exit 1
+      fi
+      REQUESTED_FILES+=("$1")
+      shift
+      ;;
+  esac
+done
+
+echo "cppcheck version:"
+cppcheck --version
+
+# Detect number of CPU cores for parallel analysis
+NPROC=$(nproc 2> /dev/null || sysctl -n hw.ncpu 2> /dev/null || echo 4)
+# Strict runs (pre-push, preflight, CI) analyze from scratch, as CI does:
+# cppcheck 2.22 does not report some preprocessor errors, such as an #if it
+# cannot evaluate, when it reuses a file's cached analysis, so a strict run on
+# the persistent cache can pass code that CI rejects.
+if [[ $STRICT -eq 1 && -z "${CPPCHECK_BUILD_DIR:-}" ]]; then
+  CPPCHECK_BUILD_DIR=$(mktemp -d "${TMPDIR:-/tmp}/mbelib-cppcheck.XXXXXX")
+  trap 'rm -rf "$CPPCHECK_BUILD_DIR"' EXIT
+fi
+CPPCHECK_BUILD_DIR="${CPPCHECK_BUILD_DIR:-.cppcheck-build}"
+mkdir -p "$CPPCHECK_BUILD_DIR"
+
+# Resolve downloaded or locally supplied headers from the actual CMake build.
+MBE_ANALYSIS_BUILD_DIR="${MBE_ANALYSIS_BUILD_DIR:-build/dev-debug}"
+if [[ ! -f "$MBE_ANALYSIS_BUILD_DIR/CMakeCache.txt" ]]; then
+  cmake -S . -B "$MBE_ANALYSIS_BUILD_DIR" -DCMAKE_BUILD_TYPE=Debug
+fi
+PFFFT_SOURCE_DIR=$(sed -n 's/^MBELIB_PFFFT_SOURCE_DIR:INTERNAL=//p' "$MBE_ANALYSIS_BUILD_DIR/CMakeCache.txt")
+if [[ ! -f "$PFFFT_SOURCE_DIR/include/pffft/pffft.h" ]]; then
+  echo "PFFFT headers missing; reconfigure $MBE_ANALYSIS_BUILD_DIR with CMake." >&2
+  exit 1
+fi
+
+# Build cppcheck arguments
+# Note: cppcheck supports multiple --std flags; it applies the appropriate
+# standard based on file extension (.c -> C standard, .cpp -> C++ standard)
+CPPCHECK_ARGS=(
+  "--enable=warning,performance,portability"
+  --std=c11
+  --std=c++14
+  --suppress=missingIncludeSystem
+  --cppcheck-build-dir="$CPPCHECK_BUILD_DIR"
+  --inline-suppr
+  "-D__has_include(x)=0"
+  -I include
+  -I src/internal
+  -I "$PFFFT_SOURCE_DIR/include/pffft"
+  -j "$NPROC"
+  --error-exitcode=1
+)
+
+# Strict mode: enable all checks and deeper value-flow analysis.
+if [[ $STRICT -eq 1 ]]; then
+  echo "Strict mode: enabling all checks, inconclusive findings, and exhaustive value-flow"
+  CPPCHECK_ARGS=(
+    --enable=all
+    --inconclusive
+    --check-level=exhaustive
+    --max-ctu-depth=4
+    --force
+    --std=c11
+    --std=c++14
+    --suppress=missingIncludeSystem
+    --cppcheck-build-dir="$CPPCHECK_BUILD_DIR"
+    --inline-suppr
+    "-D__has_include(x)=0"
+    -I include
+    -I src/internal
+    -I "$PFFFT_SOURCE_DIR/include/pffft"
+    -j "$NPROC"
+    --error-exitcode=1
+  )
+fi
+
+# Verbose mode
+if [[ $VERBOSE -eq 1 ]]; then
+  CPPCHECK_ARGS+=(--verbose)
+fi
+
+# Suppress known false positives or low-value warnings for this codebase
+# Format string mismatches with %d and unsigned are common in legacy code
+CPPCHECK_ARGS+=(
+  --suppress=invalidPrintfArgType_sint
+  --suppress=invalidPrintfArgType_uint
+  --suppress=normalCheckLevelMaxBranches
+  --suppress=unmatchedSuppression
+  --suppress=unusedFunction
+  --suppress=constParameter
+  --suppress=toomanyconfigs
+  --suppress=checkersReport
+  -i src/external
+  -i "$PFFFT_SOURCE_DIR"
+  "--suppress=*:$PFFFT_SOURCE_DIR/*"
+)
+
+# Include generated public headers (version.h) when present.
+if [[ -d "$MBE_ANALYSIS_BUILD_DIR/include" ]]; then
+  CPPCHECK_ARGS+=(-I "$MBE_ANALYSIS_BUILD_DIR/include")
+fi
+
+LOG_FILE=".cppcheck.local.out"
+
+FILES=()
+if [[ ${#REQUESTED_FILES[@]} -gt 0 ]]; then
+  for f in "${REQUESTED_FILES[@]}"; do
+    f="${f#./}"
+    case "$f" in "$PFFFT_SOURCE_DIR"/* | "${PFFFT_SOURCE_DIR#"$ROOT_DIR/"}"/*) continue ;; esac
+    case "$f" in
+      build/* | src/external/*) continue ;;
+    esac
+    case "$f" in
+      *.c | *.cc | *.cpp | *.cxx) FILES+=("$f") ;;
+    esac
+  done
+
+  if [[ ${#FILES[@]} -eq 0 ]]; then
+    echo "No translation units found to analyze from requested paths."
+    exit 0
+  fi
+
+  mapfile -t FILES < <(printf '%s\n' "${FILES[@]}" | sort -u)
+  echo "Analyzing ${#FILES[@]} file(s) with cppcheck..."
+else
+  echo "Analyzing src/, include/, fuzz/ directories and the C quality tools..."
+fi
+echo ""
+
+# Select analysis targets.
+CPPCHECK_TARGETS=(src/ include/ fuzz/)
+# The C quality tools (and the TETRA conformance-file decoder) are first-party; the OP25 encoder
+# driver (.cc) builds against an external checkout and is compiled by build_op25_encoder.sh.
+for quality_source in tools/quality/mbe_quality_*.c tools/quality/mbe_tetra_decode.c; do
+  if [ -f "$quality_source" ]; then
+    CPPCHECK_TARGETS+=("$quality_source")
+  fi
+done
+if [[ ${#FILES[@]} -gt 0 ]]; then
+  CPPCHECK_TARGETS=("${FILES[@]}")
+fi
+
+# Run cppcheck and capture output
+# Use --template for consistent output format
+if cppcheck "${CPPCHECK_ARGS[@]}" \
+  --template='{file}:{line}: {severity}: {message} [{id}]' \
+  "${CPPCHECK_TARGETS[@]}" 2>&1 | tee "$LOG_FILE"; then
+  echo ""
+  echo "cppcheck passed. Full output in $LOG_FILE"
+else
+  EXIT_CODE=$?
+  echo ""
+  echo "cppcheck found issues. See $LOG_FILE for details." >&2
+
+  # Print summary by severity
+  echo ""
+  echo "Summary by severity:" >&2
+  grep -E ': (error|warning|style|performance|portability):' "$LOG_FILE" 2> /dev/null |
+    sed -E 's/.*: (error|warning|style|performance|portability):.*/\1/' |
+    sort | uniq -c | sort -rn >&2 || true
+
+  exit $EXIT_CODE
+fi

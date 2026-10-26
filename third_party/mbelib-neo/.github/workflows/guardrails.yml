@@ -1,0 +1,290 @@
+# SPDX-License-Identifier: GPL-2.0-or-later
+name: guardrails
+
+on:
+  workflow_dispatch: {}
+  push:
+    branches: [main, master]
+  pull_request:
+    branches: [main, master]
+  schedule:
+    - cron: "19 6 * * 2"
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+  pull-requests: read
+
+jobs:
+  changes:
+    if: github.event_name == 'pull_request'
+    # Keep the revision local; actionlint does not yet recognize the $/ spelling.
+    uses: ./.github/workflows/ci-changes.yml # zizmor: ignore[self-repository] -- same-revision workflow; actionlint lacks $/ support
+
+  repository-guardrails:
+    name: repository guardrails
+    runs-on: ubuntu-latest
+    concurrency:
+      group: ci-fast-2
+      cancel-in-progress: false
+      queue: max
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      - name: Install guardrail dependencies
+        run: sudo apt-get update && sudo apt-get install -y ripgrep
+
+      - name: Check security guardrails
+        run: |
+          python3 tools/legal_inventory.py
+          python3 tests/test_legal_release.py
+          tools/check_workflow_git_pins.sh
+          tools/check_workflow_download_pins.sh
+
+  script-lint:
+    name: shell/workflow lint
+    runs-on: ubuntu-latest
+    concurrency:
+      group: ci-fast-2
+      cancel-in-progress: false
+      queue: max
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      - name: Check Docker Hub credentials
+        id: dockerhub
+        # Dependabot and fork PRs get no Docker Hub secrets. The login is then skipped
+        # and the pull goes out anonymously.
+        env:
+          DOCKERHUB_USERNAME: ${{ secrets.DOCKERHUB_USERNAME }}
+          DOCKERHUB_TOKEN: ${{ secrets.DOCKERHUB_TOKEN }}
+        run: |
+          if [ -n "$DOCKERHUB_USERNAME" ] && [ -n "$DOCKERHUB_TOKEN" ]; then
+            echo "available=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "available=false" >> "$GITHUB_OUTPUT"
+            echo "Docker Hub secrets are not set for this run; pulling anonymously."
+          fi
+      - name: Login to Docker Hub (optional)
+        # The Arch toolchain image below is pulled with `docker` inside a step, so it
+        # needs a login of its own.
+        if: steps.dockerhub.outputs.available == 'true'
+        uses: docker/login-action@dbcb813823bdd20940b903addbd779551569679f
+        continue-on-error: true
+        env:
+          DOCKERHUB_USERNAME: ${{ secrets.DOCKERHUB_USERNAME }}
+          DOCKERHUB_TOKEN: ${{ secrets.DOCKERHUB_TOKEN }}
+        with:
+          username: ${{ env.DOCKERHUB_USERNAME }}
+          password: ${{ env.DOCKERHUB_TOKEN }}
+      - name: Run shell and workflow lint
+        env:
+          CI_ARCH_EXTRA_PACKAGES: shellcheck shfmt actionlint
+        run: |
+          tools/ci_arch_toolchain.sh bash -lc '
+            set -euo pipefail
+            tools/shell_lint.sh
+            tools/workflow_lint.sh
+            python3 tests/test_shell_lint.py tools/shell_lint.sh
+          '
+
+      - name: Upload lint output
+        if: always()
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: script-lint-report
+          path: |
+            .shell-lint.local.out
+            .actionlint.local.out
+          include-hidden-files: true
+          retention-days: 7
+
+  cmake-format:
+    needs: changes
+    if: ${{ !cancelled() && (needs.changes.result != 'success' || needs.changes.outputs.cmake_format_files != '0') }}
+    name: cmake format
+    runs-on: ubuntu-latest
+    concurrency:
+      group: ci-fast-2
+      cancel-in-progress: false
+      queue: max
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          fetch-depth: 0
+
+      - name: Set up Python
+        uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
+        with:
+          python-version: "3.14"
+
+      - name: Install gersemi
+        run: python -m pip install --require-hashes -r .github/requirements/gersemi.txt
+
+      - name: Check CMake formatting
+        run: tools/cmake_format_check.sh
+
+      - name: Upload CMake format output
+        if: always()
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: cmake-format-report
+          path: .cmake-format.local.out
+          include-hidden-files: true
+          retention-days: 7
+
+  gitleaks:
+    name: gitleaks
+    runs-on: ubuntu-latest
+    concurrency:
+      group: ci-fast-2
+      cancel-in-progress: false
+      queue: max
+    permissions:
+      contents: read
+      security-events: write
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          fetch-depth: 0
+
+      - name: Run Gitleaks
+        run: tools/gitleaks.sh
+
+      - name: Upload Gitleaks SARIF
+        if: always() && hashFiles('.gitleaks.sarif') != ''
+        continue-on-error: true
+        uses: github/codeql-action/upload-sarif@24c54180a607b1449ed407dd24f251e4e9147c8d # v4
+        with:
+          sarif_file: .gitleaks.sarif
+
+      - name: Upload Gitleaks output
+        if: always()
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: gitleaks-report
+          path: |
+            .gitleaks.local.out
+            .gitleaks.sarif
+          include-hidden-files: true
+          retention-days: 7
+
+  zizmor:
+    needs: changes
+    if: ${{ !cancelled() && (needs.changes.result != 'success' || needs.changes.outputs.workflow_security_targets != '0') }}
+    name: zizmor
+    runs-on: ubuntu-latest
+    concurrency:
+      group: ci-fast-2
+      cancel-in-progress: false
+      queue: max
+    permissions:
+      contents: read
+      security-events: write
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          fetch-depth: 0
+
+      - name: Set up Python
+        uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
+        with:
+          python-version: "3.14"
+
+      - name: Install zizmor
+        run: python -m pip install --require-hashes -r .github/requirements/zizmor.txt
+
+      - name: Run zizmor
+        env:
+          MBE_ZIZMOR_SARIF_OUT: .zizmor.sarif
+        run: tools/zizmor.sh
+
+      - name: Run pedantic zizmor advisory
+        if: github.event_name == 'schedule'
+        continue-on-error: true
+        env:
+          MBE_ZIZMOR_SARIF_OUT: .zizmor-pedantic.sarif
+        run: tools/zizmor.sh --pedantic --min-confidence high --no-config
+
+      - name: Upload zizmor SARIF
+        if: always() && hashFiles('.zizmor.sarif') != ''
+        continue-on-error: true
+        uses: github/codeql-action/upload-sarif@24c54180a607b1449ed407dd24f251e4e9147c8d # v4
+        with:
+          sarif_file: .zizmor.sarif
+
+      - name: Upload zizmor output
+        if: always()
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: zizmor-report
+          path: |
+            .zizmor.local.out
+            .zizmor.sarif
+            .zizmor-pedantic.sarif
+          include-hidden-files: true
+          retention-days: 7
+
+  osv-scan:
+    needs: changes
+    if: ${{ !cancelled() && (needs.changes.result != 'success' || needs.changes.outputs.dependency_scan_targets != '0') }}
+    name: osv scan
+    runs-on: ubuntu-latest
+    concurrency:
+      group: ci-fast-1
+      cancel-in-progress: false
+      queue: max
+    permissions:
+      contents: read
+      security-events: write
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          fetch-depth: 0
+
+      - name: Run OSV scan
+        env:
+          MBE_OSV_SARIF_OUT: .osv-scanner.sarif
+        run: tools/osv_scan.sh
+
+      - name: Upload OSV SARIF
+        if: always() && hashFiles('.osv-scanner.sarif') != ''
+        continue-on-error: true
+        uses: github/codeql-action/upload-sarif@24c54180a607b1449ed407dd24f251e4e9147c8d # v4
+        with:
+          sarif_file: .osv-scanner.sarif
+
+      - name: Upload OSV output
+        if: always()
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: osv-scan-report
+          path: |
+            .osv-scanner.local.out
+            .osv-scanner.sarif
+          include-hidden-files: true
+          retention-days: 7
+
+  warnings-as-errors:
+    needs: changes
+    if: ${{ !cancelled() && (needs.changes.result != 'success' || needs.changes.outputs.native_needed != 'false') }}
+    name: warnings as errors
+    runs-on: ubuntu-latest
+    concurrency:
+      group: ci-worker-03
+      cancel-in-progress: false
+      queue: max
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      - name: Configure with warnings as errors
+        run: cmake --preset dev-debug -DMBELIB_WARNINGS_AS_ERRORS=ON
+
+      - name: Build with warnings as errors
+        run: cmake --build --preset dev-debug -j
+
+      - name: Test warnings-as-errors build
+        run: ctest --preset dev-debug --output-on-failure

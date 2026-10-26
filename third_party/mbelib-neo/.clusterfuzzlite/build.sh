@@ -1,0 +1,113 @@
+#!/bin/bash -eu
+# SPDX-License-Identifier: GPL-2.0-or-later
+
+PROJECT_DIR="$SRC/mbelib-neo"
+OBJ_DIR="$WORK/obj"
+GEN_INCLUDE_DIR="$WORK/include"
+
+mkdir -p "$OBJ_DIR" "$GEN_INCLUDE_DIR/mbelib-neo" "$OUT"
+sed 's/@PROJECT_VERSION@/0.0.0-fuzz/' \
+  "$PROJECT_DIR/include/mbelib-neo/version.h.in" \
+  > "$GEN_INCLUDE_DIR/mbelib-neo/version.h"
+
+read -r -a FUZZ_CFLAGS <<< "${CFLAGS:-}"
+read -r -a FUZZ_CXXFLAGS <<< "${CXXFLAGS:-}"
+read -r -a FUZZING_ENGINE <<< "${LIB_FUZZING_ENGINE:-}"
+
+COMMON_CFLAGS=(
+  -std=gnu99
+  -DPFFFT_SIMD_DISABLE=1
+  -DPFFFT_STATIC_DEFINE
+  -DPFFFT_DISABLE_FMA=1
+  -I"$PROJECT_DIR/include"
+  -I"$GEN_INCLUDE_DIR"
+  -I"$PROJECT_DIR"
+  -I"$PROJECT_DIR/src/internal"
+  -I"$SRC/pffft/include/pffft"
+)
+
+PROJECT_WARNING_FLAGS=(
+  -Wall
+  -Wextra
+  -Wpedantic
+  -Werror
+)
+
+sources=(
+  src/ambe/ambe3600x2400.c
+  src/ambe/ambe3600x2400_enc.c
+  src/ambe/dstar_frame.c
+  src/ambe/ambe3600x2450.c
+  src/ambe/ambe3600x2450_enc.c
+  src/ambe/ambe_common.c
+  src/ambe/ambe_encoder.c
+  src/ecc/ecc_soft.c
+  src/ecc/ecc_soft_search.c
+  src/ecc/ecc_soft_search_avx2.c
+  src/ecc/ecc.c
+  src/ecc/ecc_const.c
+  src/imbe/imbe7100x4400.c
+  src/imbe/imbe7200x4400.c
+  src/imbe/imbe7200x4400_enc.c
+  src/core/mbelib.c
+  src/core/mbe_cpu.c
+  src/core/mbe_voiced.c
+  src/core/mbe_voiced_avx2.c
+  src/core/mbe_pcm_convert.c
+  src/core/mbe_adaptive.c
+  src/core/mbe_encoder.c
+  src/core/mbe_speech_analysis.c
+  src/core/mbe_tone_detect.c
+  src/core/mbe_tone_fit.c
+  src/core/mbe_tone_fit_avx2.c
+  src/core/mbe_unvoiced_fft.c
+  src/tetra/tetra_acelp_codebooks.c
+  src/tetra/tetra_acelp_decoder.c
+  src/tetra/tetra_acelp_dsp.c
+  src/tetra/tetra_acelp_avx2.c
+)
+
+objects=()
+for source in "${sources[@]}"; do
+  object="$OBJ_DIR/${source//\//_}.o"
+  source_cflags=()
+  if [[ "$source" == src/core/mbe_pcm_convert.c ]]; then
+    source_cflags+=(-fno-fast-math)
+  fi
+  "$CC" "${FUZZ_CFLAGS[@]}" "${COMMON_CFLAGS[@]}" "${PROJECT_WARNING_FLAGS[@]}" "${source_cflags[@]}" -c "$PROJECT_DIR/$source" -o "$object"
+  objects+=("$object")
+done
+
+# Production PFFFT only; FFTPACK is the fork's separate reference implementation.
+for source in pffft.c pffft_common.c; do
+  object="$OBJ_DIR/pffft_$source.o"
+  "$CC" "${FUZZ_CFLAGS[@]}" "${COMMON_CFLAGS[@]}" "${PROJECT_WARNING_FLAGS[@]}" \
+    -c "$SRC/pffft/src/$source" -o "$object"
+  objects+=("$object")
+done
+
+build_fuzzer() {
+  local source=$1
+  local name
+  name=$(basename "$source" .cc)
+
+  "$CXX" "${FUZZ_CXXFLAGS[@]}" "${PROJECT_WARNING_FLAGS[@]}" -std=c++17 \
+    -I"$PROJECT_DIR/include" \
+    -I"$GEN_INCLUDE_DIR" \
+    "$PROJECT_DIR/$source" \
+    "${objects[@]}" \
+    "${FUZZING_ENGINE[@]}" \
+    -lm \
+    -o "$OUT/$name"
+}
+
+fuzzers=(
+  fuzz/fuzz_process_frame.cc
+  fuzz/fuzz_frame_decode.cc
+  fuzz/fuzz_encode_frame.cc
+  fuzz/fuzz_tetra_decode.cc
+)
+
+for fuzzer in "${fuzzers[@]}"; do
+  build_fuzzer "$fuzzer"
+done

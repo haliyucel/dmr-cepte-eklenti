@@ -1,0 +1,79 @@
+# SPDX-License-Identifier: GPL-2.0-or-later
+name: ClusterFuzzLite PR fuzzing
+
+# Runs on every pull request so its checks can be required: a required check from a
+# workflow that a path filter kept from starting would wait forever. The job decides
+# for itself whether the fuzzers need to run, from the paths the filter used to list
+# (tools/ci_changed_files.sh, fuzz_targets).
+on:
+  pull_request:
+    branches: [main, master]
+  workflow_dispatch: {}
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+  pull-requests: read
+
+jobs:
+  changes:
+    if: github.event_name == 'pull_request'
+    # Keep the revision local; actionlint does not yet recognize the $/ spelling.
+    uses: ./.github/workflows/ci-changes.yml # zizmor: ignore[self-repository] -- same-revision workflow; actionlint lacks $/ support
+
+  pr-fuzzing:
+    needs: changes
+    if: ${{ !cancelled() }}
+    name: PR fuzzing (${{ matrix.sanitizer }})
+    runs-on: ubuntu-latest
+    concurrency:
+      group: ${{ matrix.ci_group }}
+      cancel-in-progress: false
+      queue: max
+    permissions:
+      contents: read
+      pull-requests: read
+    strategy:
+      fail-fast: false
+      max-parallel: 2
+      matrix:
+        include:
+          - sanitizer: address
+            ci_group: ci-worker-12
+          - sanitizer: undefined
+            ci_group: ci-worker-13
+    env:
+      CI_RUN_CHECK: ${{ needs.changes.result != 'success' || needs.changes.outputs.fuzz_targets != '0' }}
+    steps:
+      # Expand every matrix entry so required checks retain their exact names.
+      - name: No relevant changes
+        if: env.CI_RUN_CHECK != 'true'
+        run: echo "No relevant changes for this check."
+      - name: Checkout repository
+        if: env.CI_RUN_CHECK == 'true'
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          fetch-depth: 0
+
+      - name: Build fuzzers
+        if: env.CI_RUN_CHECK == 'true'
+        id: build
+        uses: google/clusterfuzzlite/actions/build_fuzzers@884713a6c30a92e5e8544c39945cd7cb630abcd1 # v1
+        with:
+          language: c++
+          sanitizer: ${{ matrix.sanitizer }}
+          github-token: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Run fuzzers
+        if: env.CI_RUN_CHECK == 'true'
+        id: run
+        uses: google/clusterfuzzlite/actions/run_fuzzers@884713a6c30a92e5e8544c39945cd7cb630abcd1 # v1
+        with:
+          github-token: ${{ secrets.GITHUB_TOKEN }}
+          fuzz-seconds: 600
+          mode: code-change
+          sanitizer: ${{ matrix.sanitizer }}
+          output-sarif: true

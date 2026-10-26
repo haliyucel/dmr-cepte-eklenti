@@ -1,0 +1,1838 @@
+# SPDX-License-Identifier: GPL-2.0-or-later
+name: CI
+
+on:
+  workflow_dispatch:
+    inputs:
+      release_tag:
+        description: 'Optional: existing signed tag whose publication needs recovery'
+        type: string
+        default: ''
+      release_run_id:
+        description: 'Original completed tag CI run; packages required unless rebuilding'
+        type: string
+        default: ''
+      rebuild_packages:
+        description: 'Rebuild exact signed tag after its original native checks passed; requires main'
+        type: boolean
+        default: false
+      update_aur_only:
+        description: 'Recover only the stable AUR update for a validated release; requires main'
+        type: boolean
+        default: false
+  push:
+    branches: [main, master]
+    tags:
+      - "v*.*.*"
+  pull_request:
+    branches: [main, master]
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.event_name }}-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+jobs:
+  changes:
+    if: github.event_name == 'pull_request'
+    # Keep the revision local; actionlint does not yet recognize the $/ spelling.
+    uses: ./.github/workflows/ci-changes.yml # zizmor: ignore[self-repository] -- same-revision workflow; actionlint lacks $/ support
+
+  build-test:
+    needs: [changes, format-check, clang-tidy, cppcheck, lizard, scan-build, semgrep]
+    if: >-
+      !cancelled() &&
+      (needs.format-check.result == 'success' || needs.format-check.result == 'skipped') &&
+      (needs.clang-tidy.result == 'success' || needs.clang-tidy.result == 'skipped') &&
+      (needs.cppcheck.result == 'success' || needs.cppcheck.result == 'skipped') &&
+      (needs.lizard.result == 'success' || needs.lizard.result == 'skipped') &&
+      (needs.scan-build.result == 'success' || needs.scan-build.result == 'skipped') &&
+      (needs.semgrep.result == 'success' || needs.semgrep.result == 'skipped')
+    name: ${{ matrix.os }} • preset=${{ matrix.preset }}
+    runs-on: ${{ matrix.os }}
+    concurrency:
+      group: ${{ matrix.ci_group }}
+      cancel-in-progress: false
+      queue: max
+    strategy:
+      fail-fast: false
+      max-parallel: 4
+      matrix:
+        include:
+          - os: ubuntu-latest
+            preset: dev-debug
+            ci_group: ci-worker-01
+          - os: ubuntu-latest
+            preset: dev-release
+            ci_group: ci-worker-02
+            require_avx2: true
+          - os: ubuntu-latest
+            preset: notones-debug
+            ci_group: ci-worker-03
+          - os: macos-latest
+            preset: dev-debug
+            ci_group: ci-worker-04
+          - os: macos-latest
+            preset: dev-release
+            ci_group: ci-worker-05
+          - os: macos-latest
+            preset: notones-debug
+            ci_group: ci-worker-06
+          - os: windows-latest
+            preset: dev-debug
+            ci_group: ci-worker-07
+          - os: windows-latest
+            preset: dev-release
+            ci_group: ci-worker-08
+            require_avx2: true
+          - os: windows-latest
+            preset: notones-debug
+            ci_group: ci-worker-09
+    env:
+      CI_RUN_CHECK: ${{ needs.changes.result != 'success' || needs.changes.outputs.native_needed != 'false' }}
+    steps:
+      # Expand every matrix entry so required checks retain their exact names.
+      - name: No relevant changes
+        if: env.CI_RUN_CHECK != 'true'
+        run: echo "No relevant changes for this check."
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        if: env.CI_RUN_CHECK == 'true'
+      # The x86-64 dev-release legs are tuned for the runner (MBELIB_ENABLE_NATIVE),
+      # which always has AVX2, so the AVX2 golden test must run, not skip.
+      - name: Configure (${{ matrix.preset }})
+        if: env.CI_RUN_CHECK == 'true'
+        run: >-
+          cmake --preset ${{ matrix.preset }} -DMBELIB_BUILD_TOOLS=ON
+          -DMBELIB_TEST_REQUIRE_AVX2=${{ matrix.require_avx2 && 'ON' || 'OFF' }}
+      - name: Build (${{ matrix.preset }})
+        if: env.CI_RUN_CHECK == 'true'
+        run: cmake --build --preset ${{ matrix.preset }} --parallel
+      - name: Test (${{ matrix.preset }})
+        if: env.CI_RUN_CHECK == 'true'
+        run: ctest --preset ${{ matrix.preset }} -V
+      - name: Verify release hardening (Unix)
+        if: env.CI_RUN_CHECK == 'true' && (matrix.os != 'windows-latest' && matrix.preset == 'dev-release')
+        run: |
+          case "${RUNNER_OS}" in
+            Linux) lib_path="build/dev-release/libmbe-neo.so" ;;
+            macOS) lib_path="build/dev-release/libmbe-neo.dylib" ;;
+            *)
+              echo "Unsupported Unix runner OS: ${RUNNER_OS}" >&2
+              exit 1
+              ;;
+          esac
+          tools/check_release_hardening.sh "${lib_path}" build/dev-release
+          tools/check_release_hardening.sh build/dev-release/example_print_version build/dev-release
+      - name: Verify release hardening (Windows)
+        if: env.CI_RUN_CHECK == 'true' && (matrix.os == 'windows-latest' && matrix.preset == 'dev-release')
+        shell: pwsh
+        run: |
+          $dll = Get-ChildItem -Path build/dev-release -Filter mbe-neo.dll -Recurse | Select-Object -First 1
+          $exe = Get-ChildItem -Path build/dev-release -Filter example_print_version.exe -Recurse | Select-Object -First 1
+          if ($null -eq $dll) { throw "mbe-neo.dll not found under build/dev-release" }
+          if ($null -eq $exe) { throw "example_print_version.exe not found under build/dev-release" }
+          ./tools/check_release_hardening.ps1 $dll.FullName
+          ./tools/check_release_hardening.ps1 $exe.FullName
+
+  clang-release-linux:
+    needs: [changes, format-check, clang-tidy, cppcheck, lizard, scan-build, semgrep]
+    if: >-
+      !cancelled() &&
+      (needs.format-check.result == 'success' || needs.format-check.result == 'skipped') &&
+      (needs.clang-tidy.result == 'success' || needs.clang-tidy.result == 'skipped') &&
+      (needs.cppcheck.result == 'success' || needs.cppcheck.result == 'skipped') &&
+      (needs.lizard.result == 'success' || needs.lizard.result == 'skipped') &&
+      (needs.scan-build.result == 'success' || needs.scan-build.result == 'skipped') &&
+      (needs.semgrep.result == 'success' || needs.semgrep.result == 'skipped') &&
+      (needs.changes.result != 'success' || needs.changes.outputs.native_needed != 'false')
+    name: linux • Clang • Release
+    runs-on: ubuntu-latest
+    concurrency:
+      group: ci-worker-01
+      cancel-in-progress: false
+      queue: max
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - name: Install Clang and LLD
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y clang lld
+          clang --version
+      - name: Configure (dev-release)
+        run: >-
+          cmake --preset dev-release
+          -DCMAKE_C_COMPILER=clang
+          -DCMAKE_EXE_LINKER_FLAGS=-fuse-ld=lld
+          -DCMAKE_SHARED_LINKER_FLAGS=-fuse-ld=lld
+      - name: Build (dev-release)
+        run: cmake --build --preset dev-release --parallel
+      - name: Test (dev-release)
+        run: ctest --preset dev-release -V
+
+  # dev-release ships fast-math, LTO and SIMD; the release assets build it for
+  # baseline x86-64 (MBELIB_ENABLE_NATIVE=OFF, tested by install-and-consume)
+  # and the matrix for whatever the runner has. This runs the whole suite,
+  # quality tools included, with x86-64-v3 code generation for every unit, so
+  # FMA contraction, auto-vectorization and optimizer-exposed undefined
+  # behaviour reach a test before a user.
+  # x86-64-v3 because every hosted x86_64 runner has it; AVX-512 (v4) is not
+  # guaranteed, so the v4 job below only links.
+  optimized-v3-ctest:
+    needs: [changes, format-check, clang-tidy, cppcheck, lizard, scan-build, semgrep]
+    if: >-
+      !cancelled() &&
+      (needs.format-check.result == 'success' || needs.format-check.result == 'skipped') &&
+      (needs.clang-tidy.result == 'success' || needs.clang-tidy.result == 'skipped') &&
+      (needs.cppcheck.result == 'success' || needs.cppcheck.result == 'skipped') &&
+      (needs.lizard.result == 'success' || needs.lizard.result == 'skipped') &&
+      (needs.scan-build.result == 'success' || needs.scan-build.result == 'skipped') &&
+      (needs.semgrep.result == 'success' || needs.semgrep.result == 'skipped') &&
+      (needs.changes.result != 'success' || needs.changes.outputs.native_needed != 'false')
+    name: linux • Release • ctest (x86-64-v3, fast-math)
+    runs-on: ubuntu-latest
+    concurrency:
+      group: ci-worker-02
+      cancel-in-progress: false
+      queue: max
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      # A runner without the ISA would SIGILL in the first test and read as a
+      # test failure; fail here with the reason instead.
+      - name: Require an x86-64-v3 runner
+        run: |
+          set -euo pipefail
+          /lib64/ld-linux-x86-64.so.2 --help | grep -F 'x86-64-v3 (supported'
+      - name: Configure (dev-release, x86-64-v3)
+        run: cmake --preset dev-release -DMBELIB_BUILD_TOOLS=ON -DCMAKE_C_FLAGS=-march=x86-64-v3
+      - name: Build (dev-release, x86-64-v3)
+        run: cmake --build --preset dev-release --parallel
+      - name: Test (dev-release, x86-64-v3)
+        run: ctest --preset dev-release --output-on-failure
+
+  # The configuration consumers build: a plain Release configure with the
+  # defaults (SIMD on, fast-math off, warnings as errors) under the runner's
+  # GCC, as dsd-neo's CI, distribution packages and the vcpkg port do. The
+  # dev-release preset enables fast-math, which compiles out the IEEE-only SIMD
+  # batches, so only this job builds them with GCC's Release optimizers:
+  # v2.5.0's codebook search failed to build here (GCC 13
+  # -Waggressive-loop-optimizations) while every preset job passed.
+  consumer-release-gcc:
+    needs: [changes, format-check, clang-tidy, cppcheck, lizard, scan-build, semgrep]
+    if: >-
+      !cancelled() &&
+      (needs.format-check.result == 'success' || needs.format-check.result == 'skipped') &&
+      (needs.clang-tidy.result == 'success' || needs.clang-tidy.result == 'skipped') &&
+      (needs.cppcheck.result == 'success' || needs.cppcheck.result == 'skipped') &&
+      (needs.lizard.result == 'success' || needs.lizard.result == 'skipped') &&
+      (needs.scan-build.result == 'success' || needs.scan-build.result == 'skipped') &&
+      (needs.semgrep.result == 'success' || needs.semgrep.result == 'skipped') &&
+      (needs.changes.result != 'success' || needs.changes.outputs.native_needed != 'false')
+    name: linux • Release • ctest (consumer defaults, GCC)
+    runs-on: ubuntu-latest
+    concurrency:
+      group: ci-worker-03
+      cancel-in-progress: false
+      queue: max
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      # The AVX2 golden tests below must run, not skip.
+      - name: Require an x86-64-v3 runner
+        run: |
+          set -euo pipefail
+          /lib64/ld-linux-x86-64.so.2 --help | grep -F 'x86-64-v3 (supported'
+      - name: Configure (Release, default options)
+        run: |
+          set -euo pipefail
+          gcc --version
+          cmake -S . -B build/consumer -DCMAKE_BUILD_TYPE=Release -DCMAKE_C_COMPILER=gcc -DMBELIB_BUILD_TESTS=ON \
+            -DMBELIB_TEST_REQUIRE_AVX2=ON | tee consumer-configure.log
+          # The job exists for these defaults; fail if they change under it.
+          grep -Fx 'MBELIB_ENABLE_SIMD:BOOL=ON' build/consumer/CMakeCache.txt
+          grep -Fx 'MBELIB_ENABLE_FAST_MATH:BOOL=OFF' build/consumer/CMakeCache.txt
+          grep -Fx 'MBELIB_WARNINGS_AS_ERRORS:BOOL=ON' build/consumer/CMakeCache.txt
+          grep -Fx 'MBELIB_ENABLE_NATIVE:BOOL=ON' build/consumer/CMakeCache.txt
+          grep -F 'MBELIB_ENABLE_NATIVE: release-like configurations use -march=native' consumer-configure.log
+      - name: Build (Release, default options)
+        run: cmake --build build/consumer --parallel
+      - name: Test (Release, default options)
+        run: ctest --test-dir build/consumer --output-on-failure
+      # The portable variant packagers build: baseline x86-64 code generation,
+      # with the AVX2 kernels dispatched at run time.
+      - name: Configure (Release, portable)
+        run: |
+          set -euo pipefail
+          cmake -S . -B build/consumer-portable -DCMAKE_BUILD_TYPE=Release -DCMAKE_C_COMPILER=gcc \
+            -DMBELIB_BUILD_TESTS=ON -DMBELIB_ENABLE_NATIVE=OFF -DMBELIB_TEST_REQUIRE_AVX2=ON | tee portable-configure.log
+          grep -F 'MBELIB_ENABLE_NATIVE: off' portable-configure.log
+          grep -F 'AVX2 dispatch: -mavx2 -mfma kernels chosen at run time' portable-configure.log
+      - name: Build (Release, portable)
+        run: cmake --build build/consumer-portable --parallel
+      - name: Test (Release, portable)
+        run: ctest --test-dir build/consumer-portable --output-on-failure
+      # Multi-config generators pick the configuration at build time: SIMD,
+      # LTO and the native tuning must reach Release without a build type.
+      - name: Configure (Ninja Multi-Config, LTO)
+        run: |
+          set -euo pipefail
+          command -v ninja || { sudo apt-get update && sudo apt-get install -y ninja-build; }
+          cmake -S . -B build/multi-config -G "Ninja Multi-Config" -DCMAKE_C_COMPILER=gcc \
+            -DMBELIB_BUILD_TESTS=ON -DMBELIB_ENABLE_LTO=ON -DMBELIB_TEST_REQUIRE_AVX2=ON
+          grep -Fx 'MBELIB_ENABLE_SIMD:BOOL=ON' build/multi-config/CMakeCache.txt
+      - name: Build and test (Ninja Multi-Config Release and Debug)
+        run: |
+          set -euo pipefail
+          for config in Release Debug; do
+            cmake --build build/multi-config --config "$config" --parallel
+            ctest --test-dir build/multi-config -C "$config" --output-on-failure
+          done
+
+  # The same suite built by a current Clang, the macOS toolchain's compiler
+  # family, which treats fast-math more aggressively than GCC or Ubuntu's Clang:
+  # it folds bit tests on floats it computed or took as arguments (an
+  # exponent-mask NaN/Inf test passed overflowed encoder models this way on
+  # macOS while Ubuntu's Clang job passed), turns divisions into approximate
+  # reciprocals and reassociates loop sums. Only the tests catch a folded bit
+  # test: Clang compiles it without a word. With -Werror,
+  # -Wnan-infinity-disabled does make isnan(), isinf() and NaN or infinity
+  # constants in fast-math code a build error. That diagnostic needs a current
+  # Clang (Ubuntu 24.04's default Clang 18 lacks it), hence the Arch
+  # toolchain, and a probe that fails the job if the compiler stops enforcing
+  # it.
+  optimized-v3-ctest-clang:
+    needs: [changes, format-check, clang-tidy, cppcheck, lizard, scan-build, semgrep]
+    if: >-
+      !cancelled() &&
+      (needs.format-check.result == 'success' || needs.format-check.result == 'skipped') &&
+      (needs.clang-tidy.result == 'success' || needs.clang-tidy.result == 'skipped') &&
+      (needs.cppcheck.result == 'success' || needs.cppcheck.result == 'skipped') &&
+      (needs.lizard.result == 'success' || needs.lizard.result == 'skipped') &&
+      (needs.scan-build.result == 'success' || needs.scan-build.result == 'skipped') &&
+      (needs.semgrep.result == 'success' || needs.semgrep.result == 'skipped') &&
+      (needs.changes.result != 'success' || needs.changes.outputs.native_needed != 'false')
+    name: linux • Release • ctest (x86-64-v3, fast-math, clang)
+    runs-on: ubuntu-latest
+    concurrency:
+      group: ci-worker-12
+      cancel-in-progress: false
+      queue: max
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - name: Check Docker Hub credentials
+        id: dockerhub
+        # Dependabot and fork PRs get no Docker Hub secrets. The login is then skipped
+        # and the pull goes out anonymously.
+        env:
+          DOCKERHUB_USERNAME: ${{ secrets.DOCKERHUB_USERNAME }}
+          DOCKERHUB_TOKEN: ${{ secrets.DOCKERHUB_TOKEN }}
+        run: |
+          if [ -n "$DOCKERHUB_USERNAME" ] && [ -n "$DOCKERHUB_TOKEN" ]; then
+            echo "available=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "available=false" >> "$GITHUB_OUTPUT"
+            echo "Docker Hub secrets are not set for this run; pulling anonymously."
+          fi
+      - name: Login to Docker Hub (optional)
+        # The Arch toolchain image below is pulled with `docker` inside a step, so it
+        # needs a login of its own.
+        if: steps.dockerhub.outputs.available == 'true'
+        uses: docker/login-action@dbcb813823bdd20940b903addbd779551569679f
+        continue-on-error: true
+        env:
+          DOCKERHUB_USERNAME: ${{ secrets.DOCKERHUB_USERNAME }}
+          DOCKERHUB_TOKEN: ${{ secrets.DOCKERHUB_TOKEN }}
+        with:
+          username: ${{ env.DOCKERHUB_USERNAME }}
+          password: ${{ env.DOCKERHUB_TOKEN }}
+      # A runner without the ISA would SIGILL in the first test and read as a
+      # test failure; fail here with the reason instead.
+      - name: Require an x86-64-v3 runner
+        run: |
+          set -euo pipefail
+          /lib64/ld-linux-x86-64.so.2 --help | grep -F 'x86-64-v3 (supported'
+      - name: Build and test under Arch Clang (dev-release, x86-64-v3)
+        env:
+          CI_ARCH_EXTRA_PACKAGES: lld
+        run: |
+          bash tools/ci_arch_toolchain.sh bash -lc '
+            set -euxo pipefail
+            clang --version
+            # Fail unless this Clang rejects a NaN test under fast-math, and
+            # rejects it with -Wnan-infinity-disabled: the probe compiles
+            # without fast-math, so no other error can stand in for the
+            # diagnostic.
+            printf "int probe(double x) { return __builtin_isnan(x); }\n" > /tmp/nan_probe.c
+            clang -Werror -c /tmp/nan_probe.c -o /tmp/nan_probe.o
+            if clang -ffast-math -Werror -c /tmp/nan_probe.c -o /tmp/nan_probe.o 2> /tmp/nan_probe.err; then
+              echo "::error::this Clang does not diagnose NaN tests under fast-math (-Wnan-infinity-disabled)" >&2
+              exit 1
+            fi
+            if ! grep -F -e "-Wnan-infinity-disabled" /tmp/nan_probe.err; then
+              cat /tmp/nan_probe.err >&2
+              echo "::error::the fast-math NaN probe failed without -Wnan-infinity-disabled" >&2
+              exit 1
+            fi
+            rm -rf build/dev-release
+            cmake --preset dev-release -DMBELIB_BUILD_TOOLS=ON \
+              -DCMAKE_C_COMPILER=clang \
+              -DCMAKE_C_FLAGS=-march=x86-64-v3 \
+              -DCMAKE_EXE_LINKER_FLAGS=-fuse-ld=lld \
+              -DCMAKE_SHARED_LINKER_FLAGS=-fuse-ld=lld
+            cmake --build --preset dev-release --parallel
+            ctest --preset dev-release --output-on-failure
+          '
+
+  # GCC emits some diagnostics, -Wstringop-overflow among them, only when the
+  # target has AVX-512, and only while LTO links the whole program (a downstream
+  # AUR build of dsd-neo hit this), so everything is built and linked here with
+  # warnings as errors. The Arch toolchain tracks the GCC release the AUR
+  # package builds with. The runner may lack AVX-512, so nothing it builds is
+  # run.
+  #
+  # These diagnostics are version- and vectorizer-sensitive and the Arch
+  # toolchain upgrades to the rolling GCC (pacman -Syu, whatever the image
+  # pin), so a GCC release can break this job on an unrelated pull request.
+  # Fix the code it flags, or give a false positive the narrowest suppression
+  # with a reason, rather than merging around it.
+  lto-link-v4:
+    needs: [changes, format-check, clang-tidy, cppcheck, lizard, scan-build, semgrep]
+    if: >-
+      !cancelled() &&
+      (needs.format-check.result == 'success' || needs.format-check.result == 'skipped') &&
+      (needs.clang-tidy.result == 'success' || needs.clang-tidy.result == 'skipped') &&
+      (needs.cppcheck.result == 'success' || needs.cppcheck.result == 'skipped') &&
+      (needs.lizard.result == 'success' || needs.lizard.result == 'skipped') &&
+      (needs.scan-build.result == 'success' || needs.scan-build.result == 'skipped') &&
+      (needs.semgrep.result == 'success' || needs.semgrep.result == 'skipped') &&
+      (needs.changes.result != 'success' || needs.changes.outputs.native_needed != 'false')
+    name: linux • GCC LTO link (x86-64-v4)
+    runs-on: ubuntu-latest
+    concurrency:
+      group: ci-worker-13
+      cancel-in-progress: false
+      queue: max
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - name: Check Docker Hub credentials
+        id: dockerhub
+        # Dependabot and fork PRs get no Docker Hub secrets. The login is then skipped
+        # and the pull goes out anonymously.
+        env:
+          DOCKERHUB_USERNAME: ${{ secrets.DOCKERHUB_USERNAME }}
+          DOCKERHUB_TOKEN: ${{ secrets.DOCKERHUB_TOKEN }}
+        run: |
+          if [ -n "$DOCKERHUB_USERNAME" ] && [ -n "$DOCKERHUB_TOKEN" ]; then
+            echo "available=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "available=false" >> "$GITHUB_OUTPUT"
+            echo "Docker Hub secrets are not set for this run; pulling anonymously."
+          fi
+      - name: Login to Docker Hub (optional)
+        # The Arch toolchain image below is pulled with `docker` inside a step, so it
+        # needs a login of its own.
+        if: steps.dockerhub.outputs.available == 'true'
+        uses: docker/login-action@dbcb813823bdd20940b903addbd779551569679f
+        continue-on-error: true
+        env:
+          DOCKERHUB_USERNAME: ${{ secrets.DOCKERHUB_USERNAME }}
+          DOCKERHUB_TOKEN: ${{ secrets.DOCKERHUB_TOKEN }}
+        with:
+          username: ${{ env.DOCKERHUB_USERNAME }}
+          password: ${{ env.DOCKERHUB_TOKEN }}
+      - name: Build and link under Arch GCC (dev-release, x86-64-v4, never run)
+        run: |
+          bash tools/ci_arch_toolchain.sh bash -lc '
+            set -euxo pipefail
+            gcc --version
+            rm -rf build/dev-release
+            cmake --preset dev-release -DMBELIB_BUILD_TOOLS=ON -DMBELIB_BUILD_BENCHMARKS=ON \
+              -DCMAKE_C_COMPILER=gcc \
+              -DCMAKE_C_FLAGS=-march=x86-64-v4
+            cmake --build --preset dev-release --parallel
+          '
+
+  # Portable SIMD builds for baseline x86-64 carry AVX2/FMA copies of the
+  # width-dependent kernels and pick them at run time. Debug pins both paths to
+  # the strict golden hashes, and the dispatched AVX2 path must reproduce a
+  # Debug -march=x86-64-v3 build exactly.
+  dispatch-debug:
+    needs: [changes, format-check, clang-tidy, cppcheck, lizard, scan-build, semgrep]
+    if: >-
+      !cancelled() &&
+      (needs.format-check.result == 'success' || needs.format-check.result == 'skipped') &&
+      (needs.clang-tidy.result == 'success' || needs.clang-tidy.result == 'skipped') &&
+      (needs.cppcheck.result == 'success' || needs.cppcheck.result == 'skipped') &&
+      (needs.lizard.result == 'success' || needs.lizard.result == 'skipped') &&
+      (needs.scan-build.result == 'success' || needs.scan-build.result == 'skipped') &&
+      (needs.semgrep.result == 'success' || needs.semgrep.result == 'skipped') &&
+      (needs.changes.result != 'success' || needs.changes.outputs.native_needed != 'false')
+    name: linux • Debug • SIMD (SSE2 baseline + AVX2 dispatch)
+    runs-on: ubuntu-latest
+    concurrency:
+      group: ci-worker-06
+      cancel-in-progress: false
+      queue: max
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      # A runner without the ISA would skip the AVX2 path; fail here with the
+      # reason instead.
+      - name: Require an x86-64-v3 runner
+        run: |
+          set -euo pipefail
+          /lib64/ld-linux-x86-64.so.2 --help | grep -F 'x86-64-v3 (supported'
+      - name: Configure (Debug, SIMD, portable)
+        run: |
+          set -euo pipefail
+          cmake -S . -B build/dispatch -DCMAKE_BUILD_TYPE=Debug -DMBELIB_ENABLE_SIMD=ON \
+            -DMBELIB_TEST_REQUIRE_AVX2=ON | tee dispatch-configure.log
+          grep -F 'AVX2 dispatch: -mavx2 -mfma kernels chosen at run time' dispatch-configure.log
+      - name: Build (Debug, SIMD, portable)
+        run: cmake --build build/dispatch --parallel
+      - name: Test (Debug, SIMD, portable)
+        run: ctest --test-dir build/dispatch --output-on-failure
+      - name: Strict golden hashes on both dispatch paths
+        run: |
+          set -euo pipefail
+          build/dispatch/test_golden_pcm sse2 --require
+          build/dispatch/test_golden_pcm avx2 --require
+          build/dispatch/test_cpu_dispatch
+      - name: Dispatched AVX2 equals a Debug x86-64-v3 build
+        run: |
+          set -euo pipefail
+          cmake -S . -B build/v3-debug -DCMAKE_BUILD_TYPE=Debug -DMBELIB_ENABLE_SIMD=ON \
+            -DCMAKE_C_FLAGS=-march=x86-64-v3 -DMBELIB_BUILD_EXAMPLES=OFF
+          cmake --build build/v3-debug --parallel --target gen_golden test_golden_pcm
+          build/v3-debug/test_golden_pcm avx2 --require
+          build/dispatch/gen_golden avx2 | tee dispatch-avx2.txt
+          build/v3-debug/gen_golden | tee v3.txt
+          diff -u v3.txt dispatch-avx2.txt
+
+  cross-arm32:
+    needs: [changes, format-check, clang-tidy, cppcheck, lizard, scan-build, semgrep]
+    if: >-
+      !cancelled() &&
+      (needs.format-check.result == 'success' || needs.format-check.result == 'skipped') &&
+      (needs.clang-tidy.result == 'success' || needs.clang-tidy.result == 'skipped') &&
+      (needs.cppcheck.result == 'success' || needs.cppcheck.result == 'skipped') &&
+      (needs.lizard.result == 'success' || needs.lizard.result == 'skipped') &&
+      (needs.scan-build.result == 'success' || needs.scan-build.result == 'skipped') &&
+      (needs.semgrep.result == 'success' || needs.semgrep.result == 'skipped')
+    name: linux • ARM32 Release • FPU=${{ matrix.fpu }} • QEMU tests
+    runs-on: ubuntu-latest
+    concurrency:
+      group: ${{ matrix.ci_group }}
+      cancel-in-progress: false
+      queue: max
+    strategy:
+      fail-fast: false
+      max-parallel: 2
+      matrix:
+        include:
+          - fpu: default
+            ci_group: ci-worker-08
+          - fpu: neon
+            ci_group: ci-worker-09
+    defaults:
+      run:
+        shell: bash
+    env:
+      CI_RUN_CHECK: ${{ needs.changes.result != 'success' || needs.changes.outputs.native_needed != 'false' }}
+    steps:
+      # Expand every matrix entry so required checks retain their exact names.
+      - name: No relevant changes
+        if: env.CI_RUN_CHECK != 'true'
+        run: echo "No relevant changes for this check."
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        if: env.CI_RUN_CHECK == 'true'
+      - name: Install ARM cross compiler and emulator
+        if: env.CI_RUN_CHECK == 'true'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y gcc-arm-linux-gnueabihf qemu-user-static
+      - name: Configure ARM32 Release
+        if: env.CI_RUN_CHECK == 'true'
+        env:
+          ARM_FPU: ${{ matrix.fpu }}
+        run: |
+          set -euo pipefail
+          fpu_args=()
+          if [ "$ARM_FPU" = neon ]; then
+            fpu_args+=(-DCMAKE_C_FLAGS=-mfpu=neon)
+          fi
+          cmake -S . -B build/arm32 \
+            -DCMAKE_TOOLCHAIN_FILE=cmake/arm-linux-gnueabihf.cmake \
+            -DCMAKE_CROSSCOMPILING_EMULATOR='qemu-arm-static;-L;/usr/arm-linux-gnueabihf' \
+            -DCMAKE_BUILD_TYPE=Release \
+            -DMBELIB_ENABLE_SIMD=ON \
+            -DMBELIB_ENABLE_FAST_MATH=ON \
+            -DMBELIB_BUILD_TESTS=ON \
+            -DMBELIB_WARNINGS_AS_ERRORS=ON \
+            "${fpu_args[@]}" | tee arm32-configure.log
+          if [ "$ARM_FPU" = default ]; then
+            if ! grep -Fq 'MBELIB_ENABLE_SIMD: FFT falls back to scalar for this target.' arm32-configure.log; then
+              echo 'Default-FPU target did not select the scalar FFT fallback.' >&2
+              exit 1
+            fi
+          elif grep -Fq 'MBELIB_ENABLE_SIMD: FFT falls back to scalar for this target.' arm32-configure.log; then
+            echo 'NEON target unexpectedly selected scalar FFT fallback.' >&2
+            exit 1
+          fi
+      - name: Build ARM32 Release
+        if: env.CI_RUN_CHECK == 'true'
+        run: cmake --build build/arm32 --parallel
+      - name: Test ARM32 Release under QEMU
+        if: env.CI_RUN_CHECK == 'true'
+        run: ctest --test-dir build/arm32 --output-on-failure
+
+  sanitize-linux:
+    needs: [changes, format-check, clang-tidy, cppcheck, lizard, scan-build, semgrep]
+    if: >-
+      !cancelled() &&
+      (needs.format-check.result == 'success' || needs.format-check.result == 'skipped') &&
+      (needs.clang-tidy.result == 'success' || needs.clang-tidy.result == 'skipped') &&
+      (needs.cppcheck.result == 'success' || needs.cppcheck.result == 'skipped') &&
+      (needs.lizard.result == 'success' || needs.lizard.result == 'skipped') &&
+      (needs.scan-build.result == 'success' || needs.scan-build.result == 'skipped') &&
+      (needs.semgrep.result == 'success' || needs.semgrep.result == 'skipped') &&
+      (needs.changes.result != 'success' || needs.changes.outputs.native_needed != 'false')
+    name: linux • Debug • sanitizers
+    runs-on: ubuntu-latest
+    concurrency:
+      group: ci-worker-11
+      cancel-in-progress: false
+      queue: max
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - name: Configure (asan-ubsan-debug)
+        run: cmake --preset asan-ubsan-debug -DMBELIB_BUILD_TOOLS=ON
+      - name: Build (asan-ubsan-debug)
+        run: cmake --build --preset asan-ubsan-debug --parallel
+      - name: Test (asan-ubsan-debug)
+        env:
+          ASAN_OPTIONS: detect_leaks=1:halt_on_error=1
+          UBSAN_OPTIONS: print_stacktrace=1:halt_on_error=1
+        run: ctest --preset asan-ubsan-debug -V
+
+  format-check:
+    needs: changes
+    if: ${{ !cancelled() && (needs.changes.result != 'success' || needs.changes.outputs.native_needed != 'false') }}
+    name: clang-format
+    runs-on: ubuntu-latest
+    concurrency:
+      group: ci-fast-2
+      cancel-in-progress: false
+      queue: max
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - name: Check Docker Hub credentials
+        id: dockerhub
+        # Dependabot and fork PRs get no Docker Hub secrets. The login is then skipped
+        # and the pull goes out anonymously.
+        env:
+          DOCKERHUB_USERNAME: ${{ secrets.DOCKERHUB_USERNAME }}
+          DOCKERHUB_TOKEN: ${{ secrets.DOCKERHUB_TOKEN }}
+        run: |
+          if [ -n "$DOCKERHUB_USERNAME" ] && [ -n "$DOCKERHUB_TOKEN" ]; then
+            echo "available=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "available=false" >> "$GITHUB_OUTPUT"
+            echo "Docker Hub secrets are not set for this run; pulling anonymously."
+          fi
+      - name: Login to Docker Hub (optional)
+        # The Arch toolchain image below is pulled with `docker` inside a step, so it
+        # needs a login of its own.
+        if: steps.dockerhub.outputs.available == 'true'
+        uses: docker/login-action@dbcb813823bdd20940b903addbd779551569679f
+        continue-on-error: true
+        env:
+          DOCKERHUB_USERNAME: ${{ secrets.DOCKERHUB_USERNAME }}
+          DOCKERHUB_TOKEN: ${{ secrets.DOCKERHUB_TOKEN }}
+        with:
+          username: ${{ env.DOCKERHUB_USERNAME }}
+          password: ${{ env.DOCKERHUB_TOKEN }}
+      - name: Check formatting
+        run: |
+          bash tools/ci_arch_toolchain.sh bash -lc '
+            set -euo pipefail
+            mapfile -t files < <(git ls-files "*.c" "*.cc" "*.cxx" "*.cpp" "*.h" "*.hpp" ":!:build/**" ":!:src/external/**")
+            if [ "${#files[@]}" -eq 0 ]; then echo "No C/C++ files to check"; exit 0; fi
+            clang-format --version
+            if clang-format -n --Werror "${files[@]}" 2>/dev/null; then
+              echo "Formatting OK (clang-format -n --Werror)"
+            else
+              echo "clang-format -n --Werror unsupported or failed; using diff"
+              diff -u <(cat "${files[@]}") <(clang-format "${files[@]}") || (echo "Run tools/format.sh" && exit 1)
+            fi
+          '
+
+  clang-tidy:
+    needs: changes
+    if: ${{ !cancelled() && (needs.changes.result != 'success' || needs.changes.outputs.native_needed != 'false') }}
+    name: clang-tidy
+    runs-on: ubuntu-latest
+    concurrency:
+      group: ci-worker-10
+      cancel-in-progress: false
+      queue: max
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - name: Check Docker Hub credentials
+        id: dockerhub
+        # Dependabot and fork PRs get no Docker Hub secrets. The login is then skipped
+        # and the pull goes out anonymously.
+        env:
+          DOCKERHUB_USERNAME: ${{ secrets.DOCKERHUB_USERNAME }}
+          DOCKERHUB_TOKEN: ${{ secrets.DOCKERHUB_TOKEN }}
+        run: |
+          if [ -n "$DOCKERHUB_USERNAME" ] && [ -n "$DOCKERHUB_TOKEN" ]; then
+            echo "available=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "available=false" >> "$GITHUB_OUTPUT"
+            echo "Docker Hub secrets are not set for this run; pulling anonymously."
+          fi
+      - name: Login to Docker Hub (optional)
+        # The Arch toolchain image below is pulled with `docker` inside a step, so it
+        # needs a login of its own.
+        if: steps.dockerhub.outputs.available == 'true'
+        uses: docker/login-action@dbcb813823bdd20940b903addbd779551569679f
+        continue-on-error: true
+        env:
+          DOCKERHUB_USERNAME: ${{ secrets.DOCKERHUB_USERNAME }}
+          DOCKERHUB_TOKEN: ${{ secrets.DOCKERHUB_TOKEN }}
+        with:
+          username: ${{ env.DOCKERHUB_USERNAME }}
+          password: ${{ env.DOCKERHUB_TOKEN }}
+      - name: Load CI dependency pins
+        id: dep-pins
+        run: |
+          set -euxo pipefail
+          source tools/ci-dependency-pins.env
+          echo "iwyu_sha=${IWYU_SHA}" >> "$GITHUB_OUTPUT"
+      - name: Restore Arch toolchain cache
+        uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: .deps-arch-toolchain
+          key: arch-toolchain-${{ runner.os }}-iwyu-${{ steps.dep-pins.outputs.iwyu_sha }}
+          restore-keys: |
+            arch-toolchain-${{ runner.os }}-iwyu-
+      - name: Restore ccache
+        uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: .ccache
+          key: ccache-${{ runner.os }}-arch-${{ github.job }}-${{ github.sha }}
+          restore-keys: |
+            ccache-${{ runner.os }}-arch-${{ github.job }}-
+            ccache-${{ runner.os }}-arch-
+      - name: Run C/C++ static analysis under Arch toolchain
+        env:
+          CI_ARCH_IWYU_SHA: ${{ steps.dep-pins.outputs.iwyu_sha }}
+        run: |
+          bash tools/ci_arch_toolchain.sh bash -lc '
+            set -euxo pipefail
+            ccache --version
+            ccache --zero-stats
+            ccache --set-config=max_size=500M
+            ccache --set-config=compression=true
+            export CC="ccache gcc"
+            export CXX="ccache g++"
+            rm -rf build/dev-debug
+            cmake --preset dev-debug -DMBELIB_BUILD_TOOLS=ON
+            tools/clang_tidy.sh
+            tools/iwyu.sh --strict
+            tools/gcc_fanalyzer.sh --strict
+            ccache -s
+          '
+      - name: Upload clang-tidy output
+        if: always()
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: clang-tidy-report
+          path: .clang-tidy.local.out
+          include-hidden-files: true
+          retention-days: 7
+      - name: Upload IWYU output
+        if: always()
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: iwyu-report
+          path: .iwyu.local.out
+          include-hidden-files: true
+          retention-days: 7
+      - name: Upload GCC fanalyzer output
+        if: always()
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: gcc-fanalyzer-report
+          path: .gcc-fanalyzer.local.out
+          include-hidden-files: true
+          retention-days: 7
+  cppcheck:
+    needs: changes
+    if: ${{ !cancelled() && (needs.changes.result != 'success' || needs.changes.outputs.native_needed != 'false') }}
+    name: cppcheck
+    runs-on: ubuntu-latest
+    concurrency:
+      group: ci-worker-01
+      cancel-in-progress: false
+      queue: max
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      - name: Check Docker Hub credentials
+        id: dockerhub
+        # Dependabot and fork PRs get no Docker Hub secrets. The login is then skipped
+        # and the pull goes out anonymously.
+        env:
+          DOCKERHUB_USERNAME: ${{ secrets.DOCKERHUB_USERNAME }}
+          DOCKERHUB_TOKEN: ${{ secrets.DOCKERHUB_TOKEN }}
+        run: |
+          if [ -n "$DOCKERHUB_USERNAME" ] && [ -n "$DOCKERHUB_TOKEN" ]; then
+            echo "available=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "available=false" >> "$GITHUB_OUTPUT"
+            echo "Docker Hub secrets are not set for this run; pulling anonymously."
+          fi
+      - name: Login to Docker Hub (optional)
+        # The Arch toolchain image below is pulled with `docker` inside a step, so it
+        # needs a login of its own.
+        if: steps.dockerhub.outputs.available == 'true'
+        uses: docker/login-action@dbcb813823bdd20940b903addbd779551569679f
+        continue-on-error: true
+        env:
+          DOCKERHUB_USERNAME: ${{ secrets.DOCKERHUB_USERNAME }}
+          DOCKERHUB_TOKEN: ${{ secrets.DOCKERHUB_TOKEN }}
+        with:
+          username: ${{ env.DOCKERHUB_USERNAME }}
+          password: ${{ env.DOCKERHUB_TOKEN }}
+      - name: Run cppcheck under Arch toolchain
+        run: |
+          bash tools/ci_arch_toolchain.sh bash -lc '
+            set -euxo pipefail
+            rm -rf build/dev-debug
+            cmake --preset dev-debug -DMBELIB_BUILD_TOOLS=ON
+            tools/cppcheck.sh --strict
+          '
+      - name: Upload cppcheck output
+        if: always()
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: cppcheck-report
+          path: .cppcheck.local.out
+          include-hidden-files: true
+          retention-days: 7
+
+  scan-build:
+    needs: changes
+    if: ${{ !cancelled() && (needs.changes.result != 'success' || needs.changes.outputs.native_needed != 'false') }}
+    name: scan-build
+    runs-on: ubuntu-latest
+    concurrency:
+      group: ci-worker-11
+      cancel-in-progress: false
+      queue: max
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - name: Check Docker Hub credentials
+        id: dockerhub
+        # Dependabot and fork PRs get no Docker Hub secrets. The login is then skipped
+        # and the pull goes out anonymously.
+        env:
+          DOCKERHUB_USERNAME: ${{ secrets.DOCKERHUB_USERNAME }}
+          DOCKERHUB_TOKEN: ${{ secrets.DOCKERHUB_TOKEN }}
+        run: |
+          if [ -n "$DOCKERHUB_USERNAME" ] && [ -n "$DOCKERHUB_TOKEN" ]; then
+            echo "available=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "available=false" >> "$GITHUB_OUTPUT"
+            echo "Docker Hub secrets are not set for this run; pulling anonymously."
+          fi
+      - name: Login to Docker Hub (optional)
+        # The Arch toolchain image below is pulled with `docker` inside a step, so it
+        # needs a login of its own.
+        if: steps.dockerhub.outputs.available == 'true'
+        uses: docker/login-action@dbcb813823bdd20940b903addbd779551569679f
+        continue-on-error: true
+        env:
+          DOCKERHUB_USERNAME: ${{ secrets.DOCKERHUB_USERNAME }}
+          DOCKERHUB_TOKEN: ${{ secrets.DOCKERHUB_TOKEN }}
+        with:
+          username: ${{ env.DOCKERHUB_USERNAME }}
+          password: ${{ env.DOCKERHUB_TOKEN }}
+      - name: Run scan-build under Arch toolchain
+        run: |
+          bash tools/ci_arch_toolchain.sh tools/scan_build.sh --strict
+      - name: Upload scan-build output
+        if: always()
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: scan-build-report
+          path: |
+            .scan-build.local.out
+            .scan-build.local
+          include-hidden-files: true
+          retention-days: 7
+
+  semgrep:
+    needs: changes
+    if: ${{ !cancelled() && (needs.changes.result != 'success' || needs.changes.outputs.native_needed != 'false') }}
+    name: semgrep
+    runs-on: ubuntu-latest
+    concurrency:
+      group: ci-fast-1
+      cancel-in-progress: false
+      queue: max
+    timeout-minutes: 20
+    permissions:
+      contents: read
+      security-events: write
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - name: Set up Python
+        uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
+        with:
+          python-version: "3.14"
+      - name: Install Semgrep
+        # The complete lockfile overrides Semgrep's vulnerable MCP and OpenTelemetry pins; see docs/dependencies.md.
+        run: |
+          python -m pip install --require-hashes --no-deps -r .github/requirements/semgrep.txt
+          python - <<'PY'
+          import subprocess
+          import sys
+
+          check = subprocess.run([sys.executable, "-m", "pip", "check"], capture_output=True, text=True)
+          expected = sorted([
+              "semgrep 1.182.1 has requirement mcp==1.29.0, but you have mcp 1.30.0.",
+              "semgrep 1.182.1 has requirement opentelemetry-api~=1.37.0, but you have opentelemetry-api 1.45.1.",
+              "semgrep 1.182.1 has requirement opentelemetry-exporter-otlp-proto-http~=1.37.0, but you have opentelemetry-exporter-otlp-proto-http 1.45.1.",
+              "semgrep 1.182.1 has requirement opentelemetry-sdk~=1.37.0, but you have opentelemetry-sdk 1.45.1.",
+          ])
+          if check.returncode != 1 or sorted(check.stdout.splitlines()) != expected or check.stderr:
+              sys.exit(f"Unexpected Semgrep dependency check: {check.stdout}{check.stderr}")
+          print("Semgrep dependencies verified; only the documented MCP and OpenTelemetry overrides differ.")
+          PY
+      - name: Run Semgrep
+        env:
+          MBE_SEMGREP_SARIF_OUT: .semgrep.sarif
+        run: tools/semgrep.sh --strict
+      - name: Upload Semgrep SARIF
+        if: always() && hashFiles('.semgrep.sarif') != ''
+        continue-on-error: true
+        uses: github/codeql-action/upload-sarif@24c54180a607b1449ed407dd24f251e4e9147c8d # v4
+        with:
+          sarif_file: .semgrep.sarif
+      - name: Upload Semgrep output
+        if: always()
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: semgrep-report
+          path: |
+            .semgrep.local.out
+            .semgrep.sarif
+          include-hidden-files: true
+          retention-days: 7
+
+  lizard:
+    name: lizard
+    runs-on: ubuntu-latest
+    concurrency:
+      group: ci-fast-1
+      cancel-in-progress: false
+      queue: max
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - name: Set up Python
+        uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
+        with:
+          python-version: "3.14"
+      - name: Install Lizard
+        run: python -m pip install --require-hashes -r .github/requirements/lizard.txt
+      - name: Run Lizard
+        run: tools/lizard.sh --strict
+      - name: Upload Lizard output
+        if: always()
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: lizard-report
+          path: .lizard.local.out
+          include-hidden-files: true
+          retention-days: 7
+
+  validate-release-tag:
+    name: Validate release tag
+    if: startsWith(github.ref, 'refs/tags/v') || (github.event_name == 'workflow_dispatch' && (inputs.release_tag != '' || inputs.release_run_id != '' || inputs.rebuild_packages || inputs.update_aur_only))
+    runs-on: ubuntu-latest
+    concurrency:
+      group: ci-control
+      cancel-in-progress: false
+      queue: max
+    permissions:
+      contents: read
+      actions: read
+    outputs:
+      tag: ${{ steps.verify.outputs.tag }}
+      commit: ${{ steps.verify.outputs.commit }}
+      version: ${{ steps.verify.outputs.version }}
+      archive_prefix: ${{ steps.verify.outputs.archive_prefix }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          fetch-depth: 0
+      - name: Validate release tag
+        id: verify
+        shell: bash
+        env:
+          RELEASE_TAG_CREATED: ${{ github.event.created }}
+          RELEASE_RECOVERY_TAG: ${{ inputs.release_tag }}
+          RELEASE_RECOVERY_RUN_ID: ${{ inputs.release_run_id }}
+          RELEASE_REBUILD_PACKAGES: ${{ inputs.rebuild_packages && 'true' || 'false' }}
+          RELEASE_AUR_ONLY: ${{ inputs.update_aur_only && 'true' || 'false' }}
+          GH_TOKEN: ${{ github.token }}
+        run: tools/ci_validate_release_tag.sh
+
+  update-aur-git:
+    name: Update AUR package (git)
+    # Main and tag runs publish the same package; serialize across refs.
+    concurrency:
+      group: aur-mbelib-neo-git
+      cancel-in-progress: false
+      queue: max
+    needs: [format-check, clang-tidy, cppcheck, lizard, scan-build, semgrep, build-test, sanitize-linux, validate-release-tag]
+    runs-on: ubuntu-latest
+    container:
+      image: archlinux:base-devel@sha256:6db772fd1dd128b9cf7b7231ca5284af70879596fe4ec754c911cfc4ac30d5eb
+      # Pulled before any step runs, so a login step cannot cover it: authenticate the pull itself.
+      # GitHub rejects empty credentials before the job starts. That is safe only because this
+      # job never runs on a pull request, where Dependabot and fork PRs have no secrets; a job
+      # that can pulls the image in a step through tools/ci_arch_toolchain.sh instead.
+      credentials:
+        username: ${{ secrets.DOCKERHUB_USERNAME }}
+        password: ${{ secrets.DOCKERHUB_TOKEN }}
+    env:
+      AUR_MAKEPKG_USER: aurbuilder
+    defaults:
+      run:
+        shell: bash
+    # Run on upstream non-PR refs. For version tags, only proceed after release validation succeeds.
+    if: >-
+      ${{
+        always() &&
+        github.repository == 'arancormonk/mbelib-neo' &&
+        github.event_name != 'pull_request' &&
+        needs.format-check.result == 'success' &&
+        needs.clang-tidy.result == 'success' &&
+        needs.cppcheck.result == 'success' &&
+        needs.lizard.result == 'success' &&
+        needs.scan-build.result == 'success' &&
+        needs.semgrep.result == 'success' &&
+        needs.build-test.result == 'success' &&
+        needs.sanitize-linux.result == 'success' &&
+        (
+          !startsWith(github.ref, 'refs/tags/v') ||
+          needs.validate-release-tag.result == 'success'
+        )
+      }}
+    steps:
+      - name: Check AUR SSH key availability
+        id: aur_key
+        env:
+          AUR_SSH_PRIVATE_KEY: ${{ secrets.AUR_SSH_PRIVATE_KEY }}
+        run: |
+          if [ -z "$AUR_SSH_PRIVATE_KEY" ]; then
+            echo "has_key=false" >> "$GITHUB_OUTPUT"
+            echo "AUR_SSH_PRIVATE_KEY is not set; skipping AUR update steps."
+          else
+            echo "has_key=true" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Install AUR tooling
+        if: steps.aur_key.outputs.has_key == 'true'
+        run: pacman -Syu --noconfirm --needed git openssh python
+
+      - name: Create makepkg user
+        if: steps.aur_key.outputs.has_key == 'true'
+        run: |
+          if ! id -u "$AUR_MAKEPKG_USER" >/dev/null 2>&1; then
+            useradd --create-home --shell /bin/bash "$AUR_MAKEPKG_USER"
+          fi
+
+      - name: Checkout repository
+        if: steps.aur_key.outputs.has_key == 'true'
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          fetch-depth: 0
+
+      - name: Mark workspace as safe
+        if: steps.aur_key.outputs.has_key == 'true'
+        run: git config --global --add safe.directory "$GITHUB_WORKSPACE"
+
+      - name: Refresh latest main ref
+        if: steps.aur_key.outputs.has_key == 'true'
+        run: git fetch --force origin refs/heads/main:refs/remotes/origin/main --tags
+
+      - name: Setup SSH for AUR
+        if: steps.aur_key.outputs.has_key == 'true'
+        run: |
+          mkdir -p "$HOME/.ssh"
+          echo "${{ secrets.AUR_SSH_PRIVATE_KEY }}" > "$HOME/.ssh/aur"
+          chmod 600 "$HOME/.ssh/aur"
+          ssh-keyscan -t ed25519 aur.archlinux.org >> "$HOME/.ssh/known_hosts"
+
+      # aur.archlinux.org gates its SSH git endpoint behind a maintenance flag
+      # (e.g. the 2026 AUR supply-chain incident), which makes every clone fail
+      # with exit 128 and turns main red even though the build is fine. Probe
+      # git-serve first and skip the update when it reports maintenance; any
+      # other probe failure (auth, DNS, host key) still fails the job loudly.
+      - name: Check AUR availability
+        id: aur_up
+        if: steps.aur_key.outputs.has_key == 'true'
+        run: |
+          ssh_opts=(-i "$HOME/.ssh/aur" -o IdentitiesOnly=yes -o "UserKnownHostsFile=$HOME/.ssh/known_hosts" -o StrictHostKeyChecking=yes -o BatchMode=yes -o ConnectTimeout=30)
+          probe_out="$(ssh "${ssh_opts[@]}" aur@aur.archlinux.org help 2>&1)" && probe_rc=0 || probe_rc=$?
+          printf '%s\n' "$probe_out"
+          if [ "$probe_rc" -eq 0 ]; then
+            echo "available=true" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+          if printf '%s' "$probe_out" | grep -qi 'down due to maintenance'; then
+            echo "available=false" >> "$GITHUB_OUTPUT"
+            echo "::notice title=AUR update skipped::aur.archlinux.org is in maintenance mode; the AUR package was not updated for this run."
+            exit 0
+          fi
+          echo "AUR SSH probe failed with exit $probe_rc for a reason other than maintenance." >&2
+          exit "$probe_rc"
+
+      - name: Clone AUR package
+        if: steps.aur_up.outputs.available == 'true'
+        run: |
+          aur_ssh_command="ssh -i $HOME/.ssh/aur -o IdentitiesOnly=yes -o UserKnownHostsFile=$HOME/.ssh/known_hosts -o StrictHostKeyChecking=yes"
+          GIT_SSH_COMMAND="$aur_ssh_command" git clone --branch master ssh://aur@aur.archlinux.org/mbelib-neo-git.git aur-package
+          git config --global --add safe.directory "$GITHUB_WORKSPACE/aur-package"
+
+      - name: Compute new pkgver
+        id: pkgver
+        if: steps.aur_up.outputs.available == 'true'
+        run: |
+          cd "$GITHUB_WORKSPACE"
+          ref="origin/main"
+          new_pkgver="$(
+            (
+              set -o pipefail
+              git describe --long --tags --abbrev=7 --match 'v[0-9]*.[0-9]*.[0-9]*' "$ref" 2>/dev/null |
+                sed 's/^v//;s/-/.r/;s/-/./'
+            ) || printf "r%s.%s" "$(git rev-list --count "$ref")" "$(git rev-parse --short=7 "$ref")"
+          )"
+          echo "pkgver=$new_pkgver" >> "$GITHUB_OUTPUT"
+          echo "Computed pkgver from $ref ($(git rev-parse --short=7 "$ref")): $new_pkgver"
+
+      - name: Prepare pinned PFFFT source for AUR
+        if: steps.aur_up.outputs.available == 'true'
+        run: |
+          git show origin/main:tools/ci-dependency-pins.env > "$RUNNER_TEMP/aur-pffft-pins.env"
+          python3 tools/update_aur_pffft.py --pins "$RUNNER_TEMP/aur-pffft-pins.env" aur-package/PKGBUILD
+
+      - name: Validate AUR VCS metadata
+        if: steps.aur_up.outputs.available == 'true'
+        run: |
+          set -euo pipefail
+          cd aur-package
+          expected="${{ steps.pkgver.outputs.pkgver }}"
+          if ! grep -Fq 'git+https://github.com/arancormonk/mbelib-neo.git#branch=main' PKGBUILD; then
+            echo "AUR PKGBUILD must explicitly track the upstream main branch." >&2
+            exit 1
+          fi
+          tmp="$(mktemp -d)"
+          trap 'rm -rf "$tmp"' EXIT
+          cp -a . "$tmp/aur-package"
+          chown -R "$AUR_MAKEPKG_USER:$AUR_MAKEPKG_USER" "$tmp"
+          runuser -u "$AUR_MAKEPKG_USER" -- bash -lc "set -o pipefail; cd '$tmp/aur-package' && makepkg --nobuild --nodeps --skipinteg --noconfirm 2>&1 | tee makepkg.out"
+          actual="$(awk '/==> Updated version:/ { ver=$NF } END { sub(/-[^-]*$/, "", ver); print ver }' "$tmp/aur-package/makepkg.out")"
+          if [ -z "$actual" ]; then
+            actual="$(sed -n 's/^pkgver=//p' "$tmp/aur-package/PKGBUILD" | head -n1)"
+          fi
+          echo "Expected pkgver: $expected"
+          echo "Actual makepkg pkgver: $actual"
+          if [ "$actual" != "$expected" ]; then
+            echo "AUR PKGBUILD pkgver() is incompatible with CI-computed pkgver." >&2
+            exit 1
+          fi
+
+      - name: Check if update needed
+        id: check
+        if: steps.aur_up.outputs.available == 'true'
+        run: |
+          cd aur-package
+          current_pkgver=$(grep -E '^\s*pkgver=' PKGBUILD | sed 's/.*pkgver=//')
+          echo "Current pkgver: $current_pkgver"
+          echo "New pkgver: ${{ steps.pkgver.outputs.pkgver }}"
+          if [ "$current_pkgver" = "${{ steps.pkgver.outputs.pkgver }}" ] && git diff --quiet -- PKGBUILD; then
+            echo "needs_update=false" >> "$GITHUB_OUTPUT"
+            echo "No update needed"
+          else
+            echo "needs_update=true" >> "$GITHUB_OUTPUT"
+            echo "Update needed"
+          fi
+
+      - name: Update PKGBUILD
+        if: steps.aur_up.outputs.available == 'true' && steps.check.outputs.needs_update == 'true'
+        run: |
+          set -euo pipefail
+          cd aur-package
+          current_pkgver=$(sed -n 's/^pkgver=//p' PKGBUILD | head -n1)
+          next_pkgrel=1
+          if [ "$current_pkgver" = "${{ steps.pkgver.outputs.pkgver }}" ]; then
+            current_pkgrel=$(sed -n 's/^pkgrel=//p' PKGBUILD | head -n1)
+            next_pkgrel=$((current_pkgrel + 1))
+          fi
+          sed -i "s/^pkgver=.*/pkgver=${{ steps.pkgver.outputs.pkgver }}/" PKGBUILD
+          sed -i "s/^pkgrel=.*/pkgrel=$next_pkgrel/" PKGBUILD
+          chown -R "$AUR_MAKEPKG_USER:$AUR_MAKEPKG_USER" .
+          runuser -u "$AUR_MAKEPKG_USER" -- bash -lc "cd '$PWD' && makepkg --printsrcinfo > .SRCINFO"
+
+      - name: Commit and push to AUR
+        if: steps.aur_up.outputs.available == 'true' && steps.check.outputs.needs_update == 'true'
+        run: |
+          cd aur-package
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          git add PKGBUILD .SRCINFO
+          git commit -m "Update to ${{ steps.pkgver.outputs.pkgver }}"
+          aur_ssh_command="ssh -i $HOME/.ssh/aur -o IdentitiesOnly=yes -o UserKnownHostsFile=$HOME/.ssh/known_hosts -o StrictHostKeyChecking=yes"
+          GIT_SSH_COMMAND="$aur_ssh_command" git push origin master
+
+  update-aur-release:
+    name: Update AUR package (release)
+    # Release tags also share one AUR package repository.
+    concurrency:
+      group: aur-mbelib-neo
+      cancel-in-progress: false
+      queue: max
+    needs: [format-check, clang-tidy, cppcheck, lizard, scan-build, semgrep, build-test, sanitize-linux, validate-release-tag]
+    runs-on: ubuntu-latest
+    container:
+      image: archlinux:base-devel@sha256:6db772fd1dd128b9cf7b7231ca5284af70879596fe4ec754c911cfc4ac30d5eb
+      # Pulled before any step runs, so a login step cannot cover it: authenticate the pull itself.
+      # GitHub rejects empty credentials before the job starts. That is safe only because this
+      # job never runs on a pull request, where Dependabot and fork PRs have no secrets; a job
+      # that can pulls the image in a step through tools/ci_arch_toolchain.sh instead.
+      credentials:
+        username: ${{ secrets.DOCKERHUB_USERNAME }}
+        password: ${{ secrets.DOCKERHUB_TOKEN }}
+    env:
+      AUR_MAKEPKG_USER: aurbuilder
+      RELEASE_TAG: ${{ needs.validate-release-tag.outputs.tag }}
+    defaults:
+      run:
+        shell: bash
+    if: >-
+      !cancelled() && github.repository == 'arancormonk/mbelib-neo' &&
+      (startsWith(github.ref, 'refs/tags/v') ||
+       (github.event_name == 'workflow_dispatch' && github.ref == 'refs/heads/main' &&
+        inputs.release_tag != '' && inputs.release_run_id != '')) &&
+      needs.format-check.result == 'success' && needs.clang-tidy.result == 'success' &&
+      needs.cppcheck.result == 'success' && needs.lizard.result == 'success' &&
+      needs.scan-build.result == 'success' && needs.semgrep.result == 'success' &&
+      needs.build-test.result == 'success' && needs.sanitize-linux.result == 'success' &&
+      needs.validate-release-tag.result == 'success'
+    steps:
+      - name: Check AUR SSH key availability
+        id: aur_key
+        env:
+          AUR_SSH_PRIVATE_KEY: ${{ secrets.AUR_SSH_PRIVATE_KEY }}
+        run: |
+          if [ -z "$AUR_SSH_PRIVATE_KEY" ]; then
+            echo "has_key=false" >> "$GITHUB_OUTPUT"
+            echo "AUR_SSH_PRIVATE_KEY is not set; skipping AUR update steps."
+          else
+            echo "has_key=true" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Install AUR tooling
+        if: steps.aur_key.outputs.has_key == 'true'
+        run: pacman -Syu --noconfirm --needed git openssh curl python
+
+      - name: Create makepkg user
+        if: steps.aur_key.outputs.has_key == 'true'
+        run: |
+          if ! id -u "$AUR_MAKEPKG_USER" >/dev/null 2>&1; then
+            useradd --create-home --shell /bin/bash "$AUR_MAKEPKG_USER"
+          fi
+
+      - name: Checkout repository
+        if: steps.aur_key.outputs.has_key == 'true'
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ needs.validate-release-tag.outputs.commit }}
+          fetch-depth: 0
+
+      - name: Mark workspace as safe
+        if: steps.aur_key.outputs.has_key == 'true'
+        run: git config --global --add safe.directory "$GITHUB_WORKSPACE"
+
+      - name: Setup SSH for AUR
+        if: steps.aur_key.outputs.has_key == 'true'
+        run: |
+          mkdir -p "$HOME/.ssh"
+          echo "${{ secrets.AUR_SSH_PRIVATE_KEY }}" > "$HOME/.ssh/aur"
+          chmod 600 "$HOME/.ssh/aur"
+          ssh-keyscan -t ed25519 aur.archlinux.org >> "$HOME/.ssh/known_hosts"
+
+      # Same maintenance gate as update-aur-git. This skip is louder (warning,
+      # not notice) because a tagged release that never reaches the AUR needs
+      # to be pushed by hand once maintenance lifts.
+      - name: Check AUR availability
+        id: aur_up
+        if: steps.aur_key.outputs.has_key == 'true'
+        run: |
+          ssh_opts=(-i "$HOME/.ssh/aur" -o IdentitiesOnly=yes -o "UserKnownHostsFile=$HOME/.ssh/known_hosts" -o StrictHostKeyChecking=yes -o BatchMode=yes -o ConnectTimeout=30)
+          probe_out="$(ssh "${ssh_opts[@]}" aur@aur.archlinux.org help 2>&1)" && probe_rc=0 || probe_rc=$?
+          printf '%s\n' "$probe_out"
+          if [ "$probe_rc" -eq 0 ]; then
+            echo "available=true" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+          if printf '%s' "$probe_out" | grep -qi 'down due to maintenance'; then
+            echo "available=false" >> "$GITHUB_OUTPUT"
+            echo "::warning title=AUR release update skipped::aur.archlinux.org is in maintenance mode; ${RELEASE_TAG} was NOT published to the AUR. Re-run this job or update the package manually once maintenance lifts."
+            exit 0
+          fi
+          echo "AUR SSH probe failed with exit $probe_rc for a reason other than maintenance." >&2
+          exit "$probe_rc"
+
+      - name: Clone AUR package
+        if: steps.aur_up.outputs.available == 'true'
+        run: |
+          aur_ssh_command="ssh -i $HOME/.ssh/aur -o IdentitiesOnly=yes -o UserKnownHostsFile=$HOME/.ssh/known_hosts -o StrictHostKeyChecking=yes"
+          GIT_SSH_COMMAND="$aur_ssh_command" git clone --branch master ssh://aur@aur.archlinux.org/mbelib-neo.git aur-package
+          git config --global --add safe.directory "$GITHUB_WORKSPACE/aur-package"
+
+      - name: Compute release metadata
+        id: release_meta
+        if: steps.aur_up.outputs.available == 'true'
+        run: |
+          pkgver="${RELEASE_TAG#v}"
+          source_url="https://github.com/${GITHUB_REPOSITORY}/archive/refs/tags/${RELEASE_TAG}.tar.gz"
+          sha256="$(
+            set -o pipefail
+            curl -fsSL "$source_url" | sha256sum | awk '{print $1}'
+          )"
+          echo "pkgver=$pkgver" >> "$GITHUB_OUTPUT"
+          echo "sha256=$sha256" >> "$GITHUB_OUTPUT"
+          echo "Computed release metadata: pkgver=$pkgver sha256=$sha256"
+
+      - name: Prepare pinned PFFFT source for AUR
+        if: steps.aur_up.outputs.available == 'true'
+        run: python3 tools/update_aur_pffft.py aur-package/PKGBUILD
+
+      - name: Check if update needed
+        id: check
+        if: steps.aur_up.outputs.available == 'true'
+        run: |
+          cd aur-package
+          current_pkgver=$(sed -n 's/^pkgver=//p' PKGBUILD | head -n1)
+          current_sha256=$(sed -n "s/^sha256sums=('\\([0-9a-f]\\{64\\}\\)').*/\\1/p" PKGBUILD | head -n1)
+          echo "Current pkgver: $current_pkgver"
+          echo "Current sha256: $current_sha256"
+          echo "New pkgver: ${{ steps.release_meta.outputs.pkgver }}"
+          echo "New sha256: ${{ steps.release_meta.outputs.sha256 }}"
+          if [ "$current_pkgver" = "${{ steps.release_meta.outputs.pkgver }}" ] &&
+             [ "$current_sha256" = "${{ steps.release_meta.outputs.sha256 }}" ] &&
+             git diff --quiet -- PKGBUILD; then
+            echo "needs_update=false" >> "$GITHUB_OUTPUT"
+            echo "No update needed"
+          else
+            echo "needs_update=true" >> "$GITHUB_OUTPUT"
+            echo "Update needed"
+          fi
+
+      - name: Update PKGBUILD
+        if: steps.aur_up.outputs.available == 'true' && steps.check.outputs.needs_update == 'true'
+        run: |
+          set -euo pipefail
+          cd aur-package
+          current_pkgver=$(sed -n 's/^pkgver=//p' PKGBUILD | head -n1)
+          next_pkgrel=1
+          if [ "$current_pkgver" = "${{ steps.release_meta.outputs.pkgver }}" ]; then
+            current_pkgrel=$(sed -n 's/^pkgrel=//p' PKGBUILD | head -n1)
+            next_pkgrel=$((current_pkgrel + 1))
+          fi
+          sed -i "s/^pkgver=.*/pkgver=${{ steps.release_meta.outputs.pkgver }}/" PKGBUILD
+          sed -i "s/^pkgrel=.*/pkgrel=$next_pkgrel/" PKGBUILD
+          sed -i "s/^sha256sums=.*/sha256sums=('${{ steps.release_meta.outputs.sha256 }}')/" PKGBUILD
+          chown -R "$AUR_MAKEPKG_USER:$AUR_MAKEPKG_USER" .
+          runuser -u "$AUR_MAKEPKG_USER" -- bash -lc "cd '$PWD' && makepkg --printsrcinfo > .SRCINFO"
+
+      - name: Validate AUR release source
+        if: steps.aur_up.outputs.available == 'true' && steps.check.outputs.needs_update == 'true'
+        run: |
+          set -euo pipefail
+          cd aur-package
+          runuser -u "$AUR_MAKEPKG_USER" -- bash -lc "cd '$PWD' && makepkg --verifysource --nodeps --noconfirm"
+
+      - name: Commit and push to AUR
+        if: steps.aur_up.outputs.available == 'true' && steps.check.outputs.needs_update == 'true'
+        run: |
+          cd aur-package
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          git add PKGBUILD .SRCINFO
+          git commit -m "Update to ${{ steps.release_meta.outputs.pkgver }}"
+          aur_ssh_command="ssh -i $HOME/.ssh/aur -o IdentitiesOnly=yes -o UserKnownHostsFile=$HOME/.ssh/known_hosts -o StrictHostKeyChecking=yes"
+          GIT_SSH_COMMAND="$aur_ssh_command" git push origin master
+
+  install-and-consume:
+    needs: [changes, format-check, clang-tidy, cppcheck, lizard, scan-build, semgrep]
+    if: >-
+      !cancelled() &&
+      (needs.format-check.result == 'success' || needs.format-check.result == 'skipped') &&
+      (needs.clang-tidy.result == 'success' || needs.clang-tidy.result == 'skipped') &&
+      (needs.cppcheck.result == 'success' || needs.cppcheck.result == 'skipped') &&
+      (needs.lizard.result == 'success' || needs.lizard.result == 'skipped') &&
+      (needs.scan-build.result == 'success' || needs.scan-build.result == 'skipped') &&
+      (needs.semgrep.result == 'success' || needs.semgrep.result == 'skipped')
+    name: install + consume (pkg-config/CMake) (${{ matrix.os }})
+    runs-on: ${{ matrix.os }}
+    concurrency:
+      group: ${{ matrix.ci_group }}
+      cancel-in-progress: false
+      queue: max
+    strategy:
+      fail-fast: false
+      max-parallel: 2
+      matrix:
+        include:
+          - os: ubuntu-latest
+            ci_group: ci-worker-02
+          - os: macos-latest
+            ci_group: ci-worker-04
+    env:
+      CI_RUN_CHECK: ${{ needs.changes.result != 'success' || needs.changes.outputs.native_needed != 'false' }}
+    steps:
+      # Expand every matrix entry so required checks retain their exact names.
+      - name: No relevant changes
+        if: env.CI_RUN_CHECK != 'true'
+        run: echo "No relevant changes for this check."
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        if: env.CI_RUN_CHECK == 'true'
+      - name: Ensure pkg-config is available (Linux)
+        if: env.CI_RUN_CHECK == 'true' && (runner.os == 'Linux')
+        run: sudo apt-get update && sudo apt-get install -y pkg-config
+      - name: Ensure pkg-config is available (macOS)
+        if: env.CI_RUN_CHECK == 'true' && (runner.os == 'macOS')
+        run: brew update && brew install pkg-config
+      # The release assets' configuration: portable code generation, with the
+      # AVX2 kernels dispatched at run time on x86-64 (the Linux runner has AVX2).
+      - name: Configure (dev-release preset, portable)
+        if: env.CI_RUN_CHECK == 'true'
+        run: >-
+          cmake --preset dev-release -DMBELIB_ENABLE_NATIVE=OFF
+          -DMBELIB_TEST_REQUIRE_AVX2=${{ runner.os == 'Linux' && 'ON' || 'OFF' }}
+      - name: Build (dev-release preset)
+        if: env.CI_RUN_CHECK == 'true'
+        run: cmake --build --preset dev-release --parallel
+      - name: Test (dev-release preset, portable)
+        if: env.CI_RUN_CHECK == 'true'
+        run: ctest --preset dev-release --output-on-failure
+      - name: Install
+        if: env.CI_RUN_CHECK == 'true'
+        run: cmake --install build/dev-release --prefix "$RUNNER_TEMP/mbe-install"
+      - name: Test pkg-config consumer
+        if: env.CI_RUN_CHECK == 'true'
+        env:
+          PKG_CONFIG_PATH: ${{ runner.temp }}/mbe-install/lib/pkgconfig:${{ env.PKG_CONFIG_PATH }}
+        run: |
+          cat > consumer.c << 'EOF'
+          #include <stdio.h>
+          #include <mbelib-neo/mbelib.h>
+          int main(void) {
+            const char *ver = mbe_versionString();
+            printf("version: %s\n", ver);
+            return ver[0] ? 0 : 1;
+          }
+          EOF
+          read -r -a pkg_config_flags <<< "$(pkg-config --cflags --libs libmbe-neo)"
+          cc consumer.c "${pkg_config_flags[@]}" "-Wl,-rpath,${RUNNER_TEMP}/mbe-install/lib" -o consumer
+          ./consumer
+      - name: Test CMake package consumer
+        if: env.CI_RUN_CHECK == 'true'
+        run: |
+          mkdir -p demo && cd demo
+          cat > CMakeLists.txt << 'EOF'
+          cmake_minimum_required(VERSION 3.20)
+          project(consumer C)
+          find_package(mbe-neo CONFIG REQUIRED)
+          add_executable(consumer consumer.c)
+          target_link_libraries(consumer PRIVATE mbe_neo::mbe_shared)
+          EOF
+          cat > consumer.c << 'EOF'
+          #include <stdio.h>
+          #include <mbelib-neo/mbelib.h>
+          int main(void) {
+            const char *ver = mbe_versionString();
+            printf("version: %s\n", ver);
+            return ver[0] ? 0 : 1;
+          }
+          EOF
+          cmake -S . -B build -DCMAKE_PREFIX_PATH="$RUNNER_TEMP/mbe-install" -DCMAKE_BUILD_RPATH="$RUNNER_TEMP/mbe-install/lib"
+          cmake --build build --parallel
+          ./build/consumer
+
+  install-and-consume-win:
+    needs: [changes, format-check, clang-tidy, cppcheck, lizard, scan-build, semgrep]
+    if: >-
+      !cancelled() &&
+      (needs.format-check.result == 'success' || needs.format-check.result == 'skipped') &&
+      (needs.clang-tidy.result == 'success' || needs.clang-tidy.result == 'skipped') &&
+      (needs.cppcheck.result == 'success' || needs.cppcheck.result == 'skipped') &&
+      (needs.lizard.result == 'success' || needs.lizard.result == 'skipped') &&
+      (needs.scan-build.result == 'success' || needs.scan-build.result == 'skipped') &&
+      (needs.semgrep.result == 'success' || needs.semgrep.result == 'skipped') &&
+      (needs.changes.result != 'success' || needs.changes.outputs.native_needed != 'false')
+    name: install + consume (CMake, Windows)
+    runs-on: windows-latest
+    concurrency:
+      group: ci-worker-07
+      cancel-in-progress: false
+      queue: max
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      # The release asset's configuration: portable code generation, with the
+      # AVX2 kernels (/arch:AVX2) dispatched at run time.
+      - name: Configure (dev-release preset, portable)
+        run: cmake --preset dev-release -DMBELIB_ENABLE_NATIVE=OFF -DMBELIB_TEST_REQUIRE_AVX2=ON
+      - name: Build (dev-release preset)
+        run: cmake --build --preset dev-release --parallel
+      - name: Test (dev-release preset, portable)
+        run: ctest --preset dev-release --output-on-failure
+      - name: Install
+        run: cmake --install build/dev-release --config Release --prefix "$env:RUNNER_TEMP\\mbe-install"
+      - name: Test CMake package consumer (static link)
+        shell: bash
+        run: |
+          mkdir -p demo && cd demo
+          cat > CMakeLists.txt << 'EOF'
+          cmake_minimum_required(VERSION 3.20)
+          project(consumer C)
+          find_package(mbe-neo CONFIG REQUIRED)
+          add_executable(consumer consumer.c)
+          # Link static to avoid DLL path concerns in CI
+          target_link_libraries(consumer PRIVATE mbe_neo::mbe_static)
+          EOF
+          cat > consumer.c << 'EOF'
+          #include <stdio.h>
+          #include <mbelib-neo/mbelib.h>
+          int main(void) {
+            const char *ver = mbe_versionString();
+            printf("version: %s\n", ver);
+            return ver[0] ? 0 : 1;
+          }
+          EOF
+          cmake -S . -B build -DCMAKE_PREFIX_PATH="$RUNNER_TEMP/mbe-install"
+          cmake --build build --config Release --parallel
+          ./build/Release/consumer.exe
+
+  package-release:
+    name: package release (${{ matrix.os }})
+    needs: [validate-release-tag, build-test, clang-release-linux, cross-arm32, sanitize-linux, install-and-consume, install-and-consume-win, optimized-v3-ctest, optimized-v3-ctest-clang, consumer-release-gcc, lto-link-v4, dispatch-debug]
+    # The PR-only classifier is skipped on tags. Explicit result checks avoid
+    # success() propagating that skip through otherwise successful native jobs.
+    if: >-
+      !cancelled() && needs.validate-release-tag.result == 'success' &&
+      needs.build-test.result == 'success' && needs.clang-release-linux.result == 'success' &&
+      needs.cross-arm32.result == 'success' && needs.sanitize-linux.result == 'success' &&
+      needs.install-and-consume.result == 'success' && needs.install-and-consume-win.result == 'success' &&
+      needs.optimized-v3-ctest.result == 'success' && needs.optimized-v3-ctest-clang.result == 'success' &&
+      needs.consumer-release-gcc.result == 'success' && needs.lto-link-v4.result == 'success' &&
+      needs.dispatch-debug.result == 'success' &&
+      (startsWith(github.ref, 'refs/tags/v') ||
+       (github.event_name == 'workflow_dispatch' && inputs.rebuild_packages))
+    runs-on: ${{ matrix.os }}
+    concurrency:
+      group: ${{ matrix.ci_group }}
+      cancel-in-progress: false
+      queue: max
+    permissions:
+      actions: read
+      attestations: write
+      artifact-metadata: write
+      contents: read
+      id-token: write
+    strategy:
+      fail-fast: false
+      max-parallel: 3
+      matrix:
+        include:
+          - os: ubuntu-latest
+            ci_group: ci-worker-01
+          - os: macos-latest
+            ci_group: ci-worker-04
+          - os: windows-latest
+            ci_group: ci-worker-07
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ needs.validate-release-tag.outputs.commit }}
+          fetch-depth: 0
+      - name: Configure (dev-release preset, portable)
+        run: cmake --preset dev-release -DMBELIB_ENABLE_NATIVE=OFF
+      - name: Build (dev-release preset)
+        run: cmake --build --preset dev-release --parallel
+      - name: Test (dev-release preset)
+        run: ctest --preset dev-release -V
+      - name: Verify release hardening (Unix)
+        if: runner.os != 'Windows'
+        run: |
+          case "${RUNNER_OS}" in
+            Linux) lib_path="build/dev-release/libmbe-neo.so" ;;
+            macOS) lib_path="build/dev-release/libmbe-neo.dylib" ;;
+            *)
+              echo "Unsupported Unix runner OS: ${RUNNER_OS}" >&2
+              exit 1
+              ;;
+          esac
+          tools/check_release_hardening.sh "${lib_path}" build/dev-release
+          tools/check_release_hardening.sh build/dev-release/example_print_version build/dev-release
+      - name: Verify release hardening (Windows)
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          $dll = Get-ChildItem -Path build/dev-release -Filter mbe-neo.dll -Recurse | Select-Object -First 1
+          $exe = Get-ChildItem -Path build/dev-release -Filter example_print_version.exe -Recurse | Select-Object -First 1
+          if ($null -eq $dll) { throw "mbe-neo.dll not found under build/dev-release" }
+          if ($null -eq $exe) { throw "example_print_version.exe not found under build/dev-release" }
+          ./tools/check_release_hardening.ps1 $dll.FullName
+          ./tools/check_release_hardening.ps1 $exe.FullName
+      - name: Compute bundle name
+        id: bundle
+        shell: bash
+        env:
+          ARCHIVE_PREFIX: ${{ needs.validate-release-tag.outputs.archive_prefix }}
+        run: |
+          set -euxo pipefail
+          case "${RUNNER_OS}" in
+            Linux) platform="linux" ;;
+            macOS) platform="macos" ;;
+            Windows) platform="windows" ;;
+            *)
+              echo "Unsupported runner OS: ${RUNNER_OS}" >&2
+              exit 1
+              ;;
+          esac
+
+          arch=$(echo "${RUNNER_ARCH}" | tr '[:upper:]' '[:lower:]')
+          echo "bundle_name=${ARCHIVE_PREFIX}-${platform}-${arch}" >> "$GITHUB_OUTPUT"
+      - name: Package install tree (Unix)
+        if: runner.os != 'Windows'
+        id: package_unix
+        shell: bash
+        env:
+          BUNDLE_NAME: ${{ steps.bundle.outputs.bundle_name }}
+        run: |
+          set -euxo pipefail
+          staging_root="${RUNNER_TEMP}/release"
+          staging_dir="${staging_root}/${BUNDLE_NAME}"
+          archive_path="dist/${BUNDLE_NAME}.tar.gz"
+
+          rm -rf "${staging_dir}" "${archive_path}"
+          mkdir -p "${staging_dir}" dist
+
+          cmake --install build/dev-release --prefix "${staging_dir}"
+          tar -C "${staging_root}" -czf "${archive_path}" "${BUNDLE_NAME}"
+
+          echo "archive_path=${archive_path}" >> "$GITHUB_OUTPUT"
+      - name: Package install tree (Windows)
+        if: runner.os == 'Windows'
+        id: package_windows
+        shell: pwsh
+        env:
+          BUNDLE_NAME: ${{ steps.bundle.outputs.bundle_name }}
+        run: |
+          $stagingRoot = Join-Path $env:RUNNER_TEMP 'release'
+          $stagingDir = Join-Path $stagingRoot $env:BUNDLE_NAME
+          $archivePath = "dist/$($env:BUNDLE_NAME).zip"
+
+          if (Test-Path $stagingDir) {
+            Remove-Item $stagingDir -Recurse -Force
+          }
+          if (Test-Path $archivePath) {
+            Remove-Item $archivePath -Force
+          }
+
+          New-Item -ItemType Directory -Path $stagingDir -Force | Out-Null
+          New-Item -ItemType Directory -Path 'dist' -Force | Out-Null
+          cmake --install build/dev-release --config Release --prefix $stagingDir
+          Compress-Archive -Path $stagingDir -DestinationPath $archivePath -CompressionLevel Optimal
+
+          "archive_path=$archivePath" >> $env:GITHUB_OUTPUT
+      - name: Select release package path
+        id: package
+        shell: bash
+        run: |
+          set -euo pipefail
+          if [ "${RUNNER_OS}" = "Windows" ]; then
+            archive_path='${{ steps.package_windows.outputs.archive_path }}'
+          else
+            archive_path='${{ steps.package_unix.outputs.archive_path }}'
+          fi
+          test -n "${archive_path}"
+          test -f "${archive_path}"
+          echo "archive_path=${archive_path}" >> "$GITHUB_OUTPUT"
+      - name: Upload release package
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: release-package-${{ runner.os }}-${{ runner.arch }}
+          path: ${{ steps.package.outputs.archive_path }}
+          retention-days: 7
+      - name: Generate component-aware release SBOM
+        shell: bash
+        env:
+          PACKAGE_PATH: ${{ steps.package.outputs.archive_path }}
+          RELEASE_VERSION: ${{ needs.validate-release-tag.outputs.version }}
+          RELEASE_COMMIT: ${{ needs.validate-release-tag.outputs.commit }}
+        run: |
+          python tools/release_sbom.py --archive "$PACKAGE_PATH" --kind binary \
+            --version "$RELEASE_VERSION" --commit "$RELEASE_COMMIT" \
+            --epoch "$(git show -s --format=%ct "$RELEASE_COMMIT")"
+      - name: Upload release SBOM
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: release-package-${{ runner.os }}-${{ runner.arch }}.spdx.json
+          path: ${{ steps.package.outputs.archive_path }}.spdx.json
+          retention-days: 7
+      - name: Attest release package provenance
+        uses: actions/attest@1e69f48acb82d1966a394da916b4c1698aa569d6 # v4.2.2
+        with:
+          subject-path: |
+            ${{ steps.package.outputs.archive_path }}
+            ${{ steps.package.outputs.archive_path }}.spdx.json
+      - name: Attest release package SBOM
+        uses: actions/attest@1e69f48acb82d1966a394da916b4c1698aa569d6 # v4.2.2
+        with:
+          subject-path: ${{ steps.package.outputs.archive_path }}
+          sbom-path: ${{ steps.package.outputs.archive_path }}.spdx.json
+
+      - name: Build corresponding source and SBOM
+        if: runner.os == 'Linux'
+        id: source
+        shell: bash
+        env:
+          RELEASE_TAG: ${{ needs.validate-release-tag.outputs.tag }}
+          RELEASE_VERSION: ${{ needs.validate-release-tag.outputs.version }}
+          RELEASE_COMMIT: ${{ needs.validate-release-tag.outputs.commit }}
+        run: |
+          python3 tools/legal_inventory.py
+          source_path="$(python3 tools/source_bundle.py --tag "$RELEASE_TAG" --commit "$RELEASE_COMMIT")"
+          python3 tools/release_sbom.py --archive "$source_path" --kind source \
+            --version "$RELEASE_VERSION" --commit "$RELEASE_COMMIT" \
+            --epoch "$(git show -s --format=%ct "$RELEASE_COMMIT")"
+          echo "archive_path=$source_path" >> "$GITHUB_OUTPUT"
+      - name: Verify corresponding source without network access
+        if: runner.os == 'Linux'
+        env:
+          SOURCE_ARCHIVE: ${{ steps.source.outputs.archive_path }}
+        run: sudo unshare --net -- python3 tools/verify_source_bundle.py "$SOURCE_ARCHIVE"
+      - name: Upload corresponding source and SBOM
+        if: runner.os == 'Linux'
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: release-package-source
+          path: |
+            ${{ steps.source.outputs.archive_path }}
+            ${{ steps.source.outputs.archive_path }}.spdx.json
+          retention-days: 7
+      - name: Attest corresponding source provenance
+        if: runner.os == 'Linux'
+        uses: actions/attest@1e69f48acb82d1966a394da916b4c1698aa569d6 # v4.2.2
+        with:
+          subject-path: |
+            ${{ steps.source.outputs.archive_path }}
+            ${{ steps.source.outputs.archive_path }}.spdx.json
+      - name: Attest corresponding source SBOM
+        if: runner.os == 'Linux'
+        uses: actions/attest@1e69f48acb82d1966a394da916b4c1698aa569d6 # v4.2.2
+        with:
+          subject-path: ${{ steps.source.outputs.archive_path }}
+          sbom-path: ${{ steps.source.outputs.archive_path }}.spdx.json
+
+  publish-release:
+    name: publish release
+    needs: [validate-release-tag, package-release]
+    runs-on: ubuntu-latest
+    concurrency:
+      group: ci-fast-2
+      cancel-in-progress: false
+      queue: max
+    if: >-
+      always() && !cancelled() && !inputs.update_aur_only && github.repository == 'arancormonk/mbelib-neo' &&
+      needs.validate-release-tag.result == 'success' &&
+      ((startsWith(github.ref, 'refs/tags/v') && needs.package-release.result == 'success') ||
+       (github.event_name == 'workflow_dispatch' && inputs.release_tag != '' && inputs.release_run_id != '' &&
+        (!inputs.rebuild_packages || needs.package-release.result == 'success')))
+    permissions:
+      actions: read
+      attestations: write
+      contents: write
+      id-token: write
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - name: Download release package artifacts
+        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          run-id: ${{ inputs.rebuild_packages && github.run_id || inputs.release_run_id || github.run_id }}
+          github-token: ${{ github.token }}
+          pattern: release-package-*
+          path: dist
+          merge-multiple: true
+      - name: Verify release packages and generate checksums
+        shell: bash
+        env:
+          ARCHIVE_PREFIX: ${{ needs.validate-release-tag.outputs.archive_prefix }}
+        run: |
+          tools/ci_prepare_release_assets.sh
+      - name: Verify original tag attestations for recovery
+        if: github.event_name == 'workflow_dispatch'
+        env:
+          GH_TOKEN: ${{ github.token }}
+          RELEASE_TAG: ${{ needs.validate-release-tag.outputs.tag }}
+          RELEASE_COMMIT: ${{ needs.validate-release-tag.outputs.commit }}
+          RELEASE_REBUILD_PACKAGES: ${{ inputs.rebuild_packages && 'true' || 'false' }}
+        run: |
+          args=()
+          if [[ "$RELEASE_REBUILD_PACKAGES" == true ]]; then
+            args+=(--builder-run-id "$GITHUB_RUN_ID")
+          fi
+          python3 tools/ci_verify_release_recovery.py --assets dist "${args[@]}"
+      - name: Record rebuild provenance in release notes
+        if: inputs.rebuild_packages
+        env:
+          RELEASE_COMMIT: ${{ needs.validate-release-tag.outputs.commit }}
+        run: |
+          printf '\nRebuilt from unchanged signed source commit %s by [reviewed workflow](https://github.com/%s/actions/runs/%s) at %s. Attestations identify this builder; the signed SBOMs identify the release source.\n' \
+            "$RELEASE_COMMIT" "$GITHUB_REPOSITORY" "$GITHUB_RUN_ID" "$GITHUB_SHA" >> dist/RELEASE-NOTES.md
+      - name: Attest checksum manifest
+        uses: actions/attest@1e69f48acb82d1966a394da916b4c1698aa569d6 # v4.2.2
+        with:
+          subject-path: dist/SHA256SUMS.txt
+      - name: Upload release assets
+        uses: softprops/action-gh-release@efb35369e0ad2afab669f228072c1b0d510eae64
+        with:
+          tag_name: ${{ needs.validate-release-tag.outputs.tag }}
+          files: |
+            dist/${{ needs.validate-release-tag.outputs.archive_prefix }}-*.tar.gz
+            dist/${{ needs.validate-release-tag.outputs.archive_prefix }}-*.zip
+            dist/${{ needs.validate-release-tag.outputs.archive_prefix }}-*.spdx.json
+            dist/SHA256SUMS.txt
+          name: mbelib-neo ${{ needs.validate-release-tag.outputs.version }}
+          body_path: dist/RELEASE-NOTES.md
+          generate_release_notes: true
+          overwrite_files: true
+          fail_on_unmatched_files: true
+          token: ${{ github.token }}

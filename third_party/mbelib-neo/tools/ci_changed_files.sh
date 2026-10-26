@@ -1,0 +1,370 @@
+#!/usr/bin/env bash
+# SPDX-License-Identifier: GPL-2.0-or-later
+set -euo pipefail
+
+# Compute the changed-file target sets used by pull-request CI.
+# Changed source files are analyzed directly, and changed headers expand to
+# representative C translation units.
+
+# Needs bash 4.4: `mapfile -d` reads git's NUL-separated names, and expanding an
+# empty array under `set -u` is an error before 4.4.
+if ((BASH_VERSINFO[0] < 4 || (BASH_VERSINFO[0] == 4 && BASH_VERSINFO[1] < 4))); then
+  echo "ci-changed-files: needs bash 4.4 or later (this is ${BASH_VERSION})" >&2
+  exit 2
+fi
+
+ROOT_DIR=$(git rev-parse --show-toplevel 2> /dev/null || pwd)
+cd "$ROOT_DIR"
+
+usage() {
+  cat << 'USAGE'
+Usage: tools/ci_changed_files.sh --base <ref-or-sha> [--head <ref-or-sha>] [--out-dir <dir>]
+
+Writes newline-delimited target files for CI jobs:
+  changed_paths.txt
+  format_files.txt
+  analysis_tus.txt
+  cppcheck_sources.txt
+  semgrep_targets.txt
+  cmake_format_files.txt
+  workflow_security_targets.txt
+  dependency_scan_targets.txt
+  fuzz_targets.txt
+
+Options:
+  --base REF      Base ref/SHA for the PR diff.
+  --head REF      Head ref/SHA for the PR diff (default: HEAD).
+  --out-dir DIR   Output directory (default: .ci/changed-files).
+  --no-header-expansion
+                  Do not expand changed headers to including translation units.
+  -h, --help      Show this help.
+USAGE
+}
+
+BASE_REF=""
+HEAD_REF="HEAD"
+OUT_DIR=".ci/changed-files"
+MAX_TUS_PER_HEADER=10
+EXPAND_HEADERS=1
+
+while [[ $# -gt 0 ]]; do
+  case "$1" in
+    --base)
+      if [[ $# -lt 2 ]]; then
+        echo "Missing value for --base" >&2
+        exit 2
+      fi
+      BASE_REF="$2"
+      shift 2
+      ;;
+    --head)
+      if [[ $# -lt 2 ]]; then
+        echo "Missing value for --head" >&2
+        exit 2
+      fi
+      HEAD_REF="$2"
+      shift 2
+      ;;
+    --out-dir)
+      if [[ $# -lt 2 ]]; then
+        echo "Missing value for --out-dir" >&2
+        exit 2
+      fi
+      OUT_DIR="$2"
+      shift 2
+      ;;
+    --no-header-expansion)
+      EXPAND_HEADERS=0
+      shift
+      ;;
+    -h | --help)
+      usage
+      exit 0
+      ;;
+    *)
+      echo "Unknown option: $1" >&2
+      usage >&2
+      exit 2
+      ;;
+  esac
+done
+
+if [[ -z "$BASE_REF" ]]; then
+  echo "Missing required --base ref/SHA" >&2
+  usage >&2
+  exit 2
+fi
+
+if ! git rev-parse --verify "$BASE_REF^{commit}" > /dev/null 2>&1; then
+  echo "Unable to resolve base ref/SHA: $BASE_REF" >&2
+  exit 2
+fi
+if ! git rev-parse --verify "$HEAD_REF^{commit}" > /dev/null 2>&1; then
+  echo "Unable to resolve head ref/SHA: $HEAD_REF" >&2
+  exit 2
+fi
+
+# Write each list to a fresh file and rename it into place. The default output
+# directory is inside the checkout, so a pull request can put a symlink (to
+# /dev/null, say) where a list goes; the rename replaces the link instead of
+# writing through it, and the jobs read the list this script wrote. A directory
+# there (or a link to one) would take the file inside it and leave the path
+# reading as an empty list, so that fails instead.
+write_list() {
+  local path="$1"
+  shift
+  local dir tmp
+  if [[ -d "$path" ]]; then
+    echo "ci-changed-files: ${path} is a directory; refusing to write the list there" >&2
+    exit 1
+  fi
+  dir=$(dirname "$path")
+  mkdir -p "$dir"
+  tmp=$(mktemp "$dir/.list.XXXXXX")
+  if [[ $# -gt 0 ]]; then
+    printf '%s\n' "$@" > "$tmp"
+  fi
+  mv -f "$tmp" "$path"
+}
+
+sort_unique_array() {
+  if [[ $# -eq 0 ]]; then
+    return 0
+  fi
+  printf '%s\n' "$@" | sort -u
+}
+
+escape_rg() {
+  printf '%s' "$1" | sed -e 's/[][(){}.^$*+?|\\]/\\&/g'
+}
+
+collect_header_includers() {
+  local pattern="$1"
+  rg -l --glob '!src/external/**' \
+    -g'*.c' \
+    "$pattern" src tests examples bench 2> /dev/null |
+    sort |
+    head -n "$MAX_TUS_PER_HEADER" || true
+}
+
+mkdir -p "$OUT_DIR"
+
+# The raw diff goes through a private temporary file outside the checkout: anything
+# under the checkout comes from the pull request, which could put a symlink to
+# /dev/null where the diff is written and empty the lists.
+DIFF_RAW=$(mktemp "${TMPDIR:-/tmp}/ci-changed-files.XXXXXX")
+trap 'rm -f "$DIFF_RAW"' EXIT
+
+# Read the paths changed between BASE_REF and HEAD_REF into diff_paths, with any extra
+# `git diff` options. -z keeps each name raw: git otherwise quotes a name with
+# non-ASCII bytes, quotes or tabs, and a quoted name matches no pattern below. A diff
+# that fails ends the run, because an empty list reads as "nothing changed" and would
+# let every job that consumes it skip its work and pass.
+read_diff_paths() {
+  if ! git diff -z --name-only "$@" "${BASE_REF}...${HEAD_REF}" > "$DIFF_RAW"; then
+    if ! git diff -z --name-only "$@" "$BASE_REF" "$HEAD_REF" > "$DIFF_RAW"; then
+      echo "ci-changed-files: git diff between ${BASE_REF} and ${HEAD_REF} failed" >&2
+      exit 1
+    fi
+  fi
+  mapfile -d '' -t diff_paths < "$DIFF_RAW"
+  # The lists are one path per line, so a name with a newline in it cannot be
+  # listed; it would split into two paths that do not exist and drop out. Fail
+  # rather than report fewer changes.
+  local path
+  for path in "${diff_paths[@]}"; do
+    if [[ "$path" == *$'\n'* ]]; then
+      printf 'ci-changed-files: a changed path contains a newline, which the line-based lists cannot hold: %q\n' "$path" >&2
+      exit 1
+    fi
+  done
+}
+
+# PR fuzzing builds the library with its vendored code and the fuzz harnesses, so any
+# change under these paths counts: deletions, both sides of a rename and src/external/
+# included, as GitHub's own `paths:` filter counted them.
+diff_paths=()
+read_diff_paths --no-renames
+fuzz_scope_paths=("${diff_paths[@]}")
+# Skip native work only for recognized prose. Unknown inputs, CI/tool changes,
+# deletions and both sides of renames retain the complete build/analysis checks.
+native_needed=false
+for p in "${fuzz_scope_paths[@]}"; do
+  case "$p" in
+    docs/*.md | README.md | CHANGELOG.md | CONTRIBUTING.md | SECURITY.md | AGENTS.md) ;;
+    *) native_needed=true ;;
+  esac
+done
+fuzz_targets=()
+for p in "${fuzz_scope_paths[@]}"; do
+  case "$p" in
+    .clusterfuzzlite/* | .github/workflows/cflite_pr.yml | .github/workflows/ci-changes.yml | tools/ci_changed_files.sh | fuzz/* | include/* | src/* | CMakeLists.txt | cmake/Pffft.cmake | tools/ci-dependency-pins.env | tools/fetch-pinned-git.sh)
+      fuzz_targets+=("$p")
+      ;;
+  esac
+done
+if [[ ${#fuzz_targets[@]} -gt 0 ]]; then
+  mapfile -t fuzz_targets < <(sort_unique_array "${fuzz_targets[@]}")
+fi
+
+read_diff_paths --diff-filter=ACMR
+changed_paths=("${diff_paths[@]}")
+
+if [[ ${#changed_paths[@]} -eq 0 ]]; then
+  write_list "$OUT_DIR/changed_paths.txt"
+  write_list "$OUT_DIR/format_files.txt"
+  write_list "$OUT_DIR/analysis_tus.txt"
+  write_list "$OUT_DIR/cppcheck_sources.txt"
+  write_list "$OUT_DIR/semgrep_targets.txt"
+  write_list "$OUT_DIR/cmake_format_files.txt"
+  write_list "$OUT_DIR/workflow_security_targets.txt"
+  write_list "$OUT_DIR/dependency_scan_targets.txt"
+else
+  mapfile -t changed_paths < <(sort_unique_array "${changed_paths[@]}")
+fi
+
+changed_sources=()
+changed_headers=()
+format_files=()
+semgrep_targets=()
+cmake_format_files=()
+workflow_security_targets=()
+dependency_scan_targets=()
+# Dependency deletions and renames must trigger scanning too.
+for p in "${fuzz_scope_paths[@]}"; do
+  case "$p" in
+    tools/ci-dependency-pins.env | cmake/Pffft.cmake | CMakeLists.txt | tools/update_pffft.py | tools/update_aur_pffft.py | tools/pffft_metadata.py | tools/fetch-pinned-git.sh | src/external/*)
+      dependency_scan_targets+=("$p")
+      ;;
+  esac
+done
+
+for p in "${changed_paths[@]}"; do
+  case "$p" in
+    build/* | src/external/*) continue ;;
+  esac
+
+  if [[ ! -e "$p" && ! -L "$p" ]]; then
+    continue
+  fi
+
+  case "$p" in
+    src/* | include/* | examples/* | bench/* | tests/* | tools/* | .github/workflows/*.yml | .github/workflows/*.yaml)
+      semgrep_targets+=("$p")
+      ;;
+  esac
+
+  case "$p" in
+    CMakeLists.txt | */CMakeLists.txt | CMakeLists.txt.in | */CMakeLists.txt.in | *.cmake | *.cmake.in)
+      cmake_format_files+=("$p")
+      ;;
+  esac
+
+  case "$p" in
+    .github/workflows/*.yml | .github/workflows/*.yaml | .github/dependabot.yml | .github/zizmor.yml)
+      workflow_security_targets+=("$p")
+      ;;
+  esac
+
+  case "$p" in
+    .github/dependabot.yml | tools/osv_scan.sh | src/external/*)
+      dependency_scan_targets+=("$p")
+      ;;
+  esac
+
+  case "$p" in
+    *.c | *.cc | *.cpp | *.cxx)
+      changed_sources+=("$p")
+      format_files+=("$p")
+      ;;
+    *.h | *.hh | *.hpp | *.hxx)
+      changed_headers+=("$p")
+      format_files+=("$p")
+      ;;
+  esac
+done
+
+analysis_tus=("${changed_sources[@]}")
+if [[ $EXPAND_HEADERS -eq 1 && ${#changed_headers[@]} -gt 0 ]]; then
+  if command -v rg > /dev/null 2>&1; then
+    for hdr in "${changed_headers[@]}"; do
+      include_key=""
+      pattern=""
+      if [[ "$hdr" == include/* ]]; then
+        include_key="${hdr#include/}"
+        include_key=$(escape_rg "$include_key")
+        pattern="^[[:space:]]*#[[:space:]]*include[[:space:]]*[<\\\"]${include_key}[>\\\"]"
+      else
+        include_key=$(basename "$hdr")
+        include_key=$(escape_rg "$include_key")
+        pattern="^[[:space:]]*#[[:space:]]*include[[:space:]]*[<\\\"][^>\\\"]*${include_key}[>\\\"]"
+      fi
+
+      mapfile -t matches < <(collect_header_includers "$pattern")
+      analysis_tus+=("${matches[@]}")
+    done
+  else
+    echo "ci-changed-files: rg not found; header include expansion skipped." >&2
+  fi
+fi
+
+cppcheck_sources=()
+for p in "${analysis_tus[@]}"; do
+  case "$p" in
+    src/*) cppcheck_sources+=("$p") ;;
+  esac
+done
+
+if [[ ${#format_files[@]} -gt 0 ]]; then
+  mapfile -t format_files < <(sort_unique_array "${format_files[@]}")
+fi
+if [[ ${#semgrep_targets[@]} -gt 0 ]]; then
+  mapfile -t semgrep_targets < <(sort_unique_array "${semgrep_targets[@]}")
+fi
+if [[ ${#analysis_tus[@]} -gt 0 ]]; then
+  mapfile -t analysis_tus < <(sort_unique_array "${analysis_tus[@]}")
+fi
+if [[ ${#cppcheck_sources[@]} -gt 0 ]]; then
+  mapfile -t cppcheck_sources < <(sort_unique_array "${cppcheck_sources[@]}")
+fi
+if [[ ${#cmake_format_files[@]} -gt 0 ]]; then
+  mapfile -t cmake_format_files < <(sort_unique_array "${cmake_format_files[@]}")
+fi
+if [[ ${#workflow_security_targets[@]} -gt 0 ]]; then
+  mapfile -t workflow_security_targets < <(sort_unique_array "${workflow_security_targets[@]}")
+fi
+if [[ ${#dependency_scan_targets[@]} -gt 0 ]]; then
+  mapfile -t dependency_scan_targets < <(sort_unique_array "${dependency_scan_targets[@]}")
+fi
+
+write_list "$OUT_DIR/changed_paths.txt" "${changed_paths[@]}"
+write_list "$OUT_DIR/format_files.txt" "${format_files[@]}"
+write_list "$OUT_DIR/analysis_tus.txt" "${analysis_tus[@]}"
+write_list "$OUT_DIR/cppcheck_sources.txt" "${cppcheck_sources[@]}"
+write_list "$OUT_DIR/semgrep_targets.txt" "${semgrep_targets[@]}"
+write_list "$OUT_DIR/cmake_format_files.txt" "${cmake_format_files[@]}"
+write_list "$OUT_DIR/workflow_security_targets.txt" "${workflow_security_targets[@]}"
+write_list "$OUT_DIR/dependency_scan_targets.txt" "${dependency_scan_targets[@]}"
+write_list "$OUT_DIR/fuzz_targets.txt" "${fuzz_targets[@]}"
+
+echo "ci-changed-files: base=${BASE_REF} head=${HEAD_REF}"
+echo "ci-changed-files: changed=${#changed_paths[@]} format=${#format_files[@]}" \
+  "tus=${#analysis_tus[@]} cppcheck=${#cppcheck_sources[@]} semgrep=${#semgrep_targets[@]}" \
+  "cmake=${#cmake_format_files[@]} workflows=${#workflow_security_targets[@]}" \
+  "deps=${#dependency_scan_targets[@]} fuzz=${#fuzz_targets[@]} native=${native_needed}"
+
+if [[ -n "${GITHUB_OUTPUT:-}" ]]; then
+  {
+    echo "out_dir=$OUT_DIR"
+    echo "changed_paths=${#changed_paths[@]}"
+    echo "native_needed=$native_needed"
+    echo "format_files=${#format_files[@]}"
+    echo "analysis_tus=${#analysis_tus[@]}"
+    echo "cppcheck_sources=${#cppcheck_sources[@]}"
+    echo "semgrep_targets=${#semgrep_targets[@]}"
+    echo "cmake_format_files=${#cmake_format_files[@]}"
+    echo "workflow_security_targets=${#workflow_security_targets[@]}"
+    echo "dependency_scan_targets=${#dependency_scan_targets[@]}"
+    echo "fuzz_targets=${#fuzz_targets[@]}"
+  } >> "$GITHUB_OUTPUT"
+fi

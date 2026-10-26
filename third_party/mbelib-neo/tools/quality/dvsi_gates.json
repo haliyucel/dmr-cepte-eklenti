@@ -1,0 +1,1486 @@
+{
+  "pitch-law": {
+    "description": "D-STAR pitch law: decoded pitch matches DVSI, quality improves, level and band balance hold, other modes untouched.",
+    "partition": "validation",
+    "checks": [
+      {
+        "mode": "dstar",
+        "metric": "pitch.dvsi_max_band_deviation",
+        "rule": "max",
+        "value": 0.003
+      },
+      {
+        "mode": "dstar",
+        "metric": "pitch.input_max_band_deviation",
+        "rule": "max",
+        "value": 0.006
+      },
+      {
+        "mode": "dstar",
+        "metric": "ours.lsd_db",
+        "rule": "decrease"
+      },
+      {
+        "mode": "dstar",
+        "metric": "ours.env_corr",
+        "rule": "increase"
+      },
+      {
+        "mode": "dstar",
+        "metric": "ours.level_offset_db",
+        "rule": "abs_delta_max",
+        "value": 0.3
+      },
+      {
+        "mode": "dstar",
+        "metric": "ours.band_delta_db_0_500",
+        "rule": "abs_delta_max",
+        "value": 0.3
+      },
+      {
+        "mode": "dstar",
+        "metric": "ours.band_delta_db_500_1000",
+        "rule": "abs_delta_max",
+        "value": 0.3
+      },
+      {
+        "mode": "dstar",
+        "metric": "ours.band_delta_db_1000_2000",
+        "rule": "abs_delta_max",
+        "value": 0.3
+      },
+      {
+        "mode": "dstar",
+        "metric": "ours.band_delta_db_2000_3000",
+        "rule": "abs_delta_max",
+        "value": 0.3
+      },
+      {
+        "mode": "dstar",
+        "metric": "ours.band_delta_db_3000_4000",
+        "rule": "abs_delta_max",
+        "value": 0.3
+      },
+      {
+        "mode": "dstar",
+        "metric": "ours.band_delta_db_3500_4000",
+        "rule": "abs_delta_max",
+        "value": 0.3
+      },
+      {
+        "mode": "dstar",
+        "metric": "ours.pcm_rail_samples",
+        "rule": "no_increase"
+      },
+      {
+        "mode": "dstar",
+        "metric": "encoder.pitch_cents_median",
+        "rule": "decrease"
+      },
+      {
+        "mode": "dstar",
+        "metric": "encoder.voicing_agreement_mean",
+        "rule": "no_decrease",
+        "value": 0.005
+      },
+      {
+        "mode": "dstar",
+        "metric": "encoder.lsd_db",
+        "rule": "no_increase",
+        "value": 0.05
+      },
+      {
+        "mode": [
+          "p25",
+          "r33"
+        ],
+        "metric": "ours.lsd_db",
+        "rule": "abs_delta_max",
+        "value": 0.0,
+        "worst": 0.0
+      },
+      {
+        "mode": [
+          "p25",
+          "r33"
+        ],
+        "metric": "speech.pcm_changed_vectors",
+        "rule": "max",
+        "value": 0
+      }
+    ]
+  },
+  "shelf": {
+    "description": "High-band shelf re-tuned toward DVSI: 2-4 kHz error to DVSI falls; level, low bands, clipping and quality hold.",
+    "partition": "validation",
+    "checks": [
+      {
+        "mode": [
+          "dstar",
+          "p25",
+          "r33"
+        ],
+        "metric": "vs_dvsi.hf_abs_error_db",
+        "rule": "decrease"
+      },
+      {
+        "mode": [
+          "dstar",
+          "p25",
+          "r33"
+        ],
+        "metric": "ours.level_offset_db",
+        "rule": "abs_delta_max",
+        "value": 0.3
+      },
+      {
+        "mode": [
+          "dstar",
+          "p25",
+          "r33"
+        ],
+        "metric": "ours.band_delta_db_0_500",
+        "rule": "abs_delta_max",
+        "value": 0.2
+      },
+      {
+        "mode": [
+          "dstar",
+          "p25",
+          "r33"
+        ],
+        "metric": "ours.band_delta_db_500_1000",
+        "rule": "abs_delta_max",
+        "value": 0.2
+      },
+      {
+        "mode": [
+          "dstar",
+          "p25",
+          "r33"
+        ],
+        "metric": "ours.band_delta_db_1000_2000",
+        "rule": "abs_delta_max",
+        "value": 0.2
+      },
+      {
+        "mode": [
+          "dstar",
+          "p25",
+          "r33"
+        ],
+        "metric": "ours.pcm_rail_samples",
+        "rule": "no_increase"
+      },
+      {
+        "mode": [
+          "dstar",
+          "p25",
+          "r33"
+        ],
+        "metric": "ours.lsd_db",
+        "rule": "no_increase",
+        "value": 0.02
+      },
+      {
+        "mode": [
+          "dstar",
+          "p25",
+          "r33"
+        ],
+        "metric": "ours.env_corr",
+        "rule": "no_decrease",
+        "value": 0.002
+      }
+    ]
+  },
+  "tones": {
+    "description": "Tone frames match DVSI's decoder on steady windows; speech PCM is unchanged.",
+    "partition": "tones",
+    "checks": [
+      {
+        "mode": [
+          "dstar",
+          "r33"
+        ],
+        "metric": "tone.level_abs_error_db",
+        "rule": "max",
+        "value": 1.0
+      },
+      {
+        "mode": [
+          "dstar",
+          "r33"
+        ],
+        "metric": "tone.freq_rel_error",
+        "rule": "max",
+        "value": 0.01
+      },
+      {
+        "mode": [
+          "dstar",
+          "r33"
+        ],
+        "metric": "tone.balance_abs_error_db",
+        "rule": "max",
+        "value": 1.0
+      },
+      {
+        "mode": [
+          "dstar",
+          "r33"
+        ],
+        "metric": "tone.detector_agreement",
+        "rule": "min",
+        "value": 0.99
+      },
+      {
+        "mode": [
+          "dstar",
+          "r33"
+        ],
+        "metric": "tone.wrong_tone_fraction",
+        "rule": "max",
+        "value": 0.01
+      },
+      {
+        "mode": [
+          "dstar",
+          "p25",
+          "r33"
+        ],
+        "metric": "speech.pcm_changed_vectors",
+        "rule": "max",
+        "value": 0
+      }
+    ]
+  },
+  "low-band": {
+    "description": "Low-frequency roll-off matched to DVSI's decoders: closer to DVSI's output, nothing else regresses.",
+    "partition": "validation",
+    "checks": [
+      {
+        "mode": [
+          "dstar",
+          "p25",
+          "r33"
+        ],
+        "metric": "vs_dvsi.lsd_db",
+        "rule": "decrease"
+      },
+      {
+        "mode": [
+          "dstar",
+          "p25",
+          "r33"
+        ],
+        "metric": "vs_dvsi.lf_abs_error_db",
+        "rule": "decrease"
+      },
+      {
+        "mode": [
+          "dstar",
+          "p25",
+          "r33"
+        ],
+        "metric": "ours.level_offset_db",
+        "rule": "abs_delta_max",
+        "value": 0.2
+      },
+      {
+        "mode": [
+          "dstar",
+          "p25",
+          "r33"
+        ],
+        "metric": "ours.band_delta_db_500_1000",
+        "rule": "abs_delta_max",
+        "value": 0.1
+      },
+      {
+        "mode": [
+          "dstar",
+          "p25",
+          "r33"
+        ],
+        "metric": "ours.band_delta_db_1000_2000",
+        "rule": "abs_delta_max",
+        "value": 0.1
+      },
+      {
+        "mode": [
+          "dstar",
+          "p25",
+          "r33"
+        ],
+        "metric": "ours.band_delta_db_2000_3000",
+        "rule": "abs_delta_max",
+        "value": 0.1
+      },
+      {
+        "mode": [
+          "dstar",
+          "p25",
+          "r33"
+        ],
+        "metric": "ours.band_delta_db_3000_4000",
+        "rule": "abs_delta_max",
+        "value": 0.1
+      },
+      {
+        "mode": [
+          "dstar",
+          "p25",
+          "r33"
+        ],
+        "metric": "ours.pcm_rail_samples",
+        "rule": "no_increase"
+      },
+      {
+        "mode": [
+          "dstar",
+          "p25",
+          "r33"
+        ],
+        "metric": "vs_dvsi.env_corr",
+        "rule": "no_decrease",
+        "value": 0.002
+      },
+      {
+        "mode": [
+          "dstar",
+          "p25",
+          "r33"
+        ],
+        "metric": "ours.env_corr",
+        "rule": "no_decrease",
+        "value": 0.005
+      },
+      {
+        "mode": [
+          "dstar",
+          "p25",
+          "r33"
+        ],
+        "metric": "ours.lsd_db",
+        "rule": "no_increase",
+        "value": 0.1
+      }
+    ]
+  },
+  "encoder": {
+    "description": "D-STAR encoder changes: our encoding, decoded by this library, gets closer to the input without hurting pitch, voicing or level; the decoder is untouched.",
+    "partition": "validation",
+    "checks": [
+      {
+        "mode": "dstar",
+        "metric": "encoder.lsd_db",
+        "rule": "decrease"
+      },
+      {
+        "mode": "dstar",
+        "metric": "encoder.env_corr",
+        "rule": "no_decrease",
+        "value": 0.002
+      },
+      {
+        "mode": "dstar",
+        "metric": "encoder.level_offset_db",
+        "rule": "abs_delta_max",
+        "value": 0.3
+      },
+      {
+        "mode": "dstar",
+        "metric": "encoder.pitch_cents_median",
+        "rule": "no_increase",
+        "value": 0.5
+      },
+      {
+        "mode": "dstar",
+        "metric": "encoder.octave_error_rate",
+        "rule": "no_increase",
+        "value": 0.005
+      },
+      {
+        "mode": "dstar",
+        "metric": "encoder.voicing_agreement_mean",
+        "rule": "no_decrease",
+        "value": 0.005
+      },
+      {
+        "mode": "dstar",
+        "metric": "encoder.pcm_rail_samples",
+        "rule": "no_increase"
+      },
+      {
+        "mode": [
+          "dstar",
+          "p25",
+          "r33"
+        ],
+        "metric": "speech.pcm_changed_vectors",
+        "rule": "max",
+        "value": 0
+      }
+    ]
+  },
+  "encoder-level": {
+    "description": "D-STAR encoder level handling: our encoding keeps the input level as DVSI's encoder does (both decoded by this library) without hurting spectral fit, pitch or voicing; the decoder is untouched.",
+    "partition": "validation",
+    "checks": [
+      {
+        "mode": "dstar",
+        "metric": "encoder.level_gap_db",
+        "rule": "decrease"
+      },
+      {
+        "mode": "dstar",
+        "metric": "encoder.vs_dvsi_bits.lsd_db",
+        "rule": "decrease"
+      },
+      {
+        "mode": "dstar",
+        "metric": "encoder.lsd_db",
+        "rule": "no_increase",
+        "value": 0.05
+      },
+      {
+        "mode": "dstar",
+        "metric": "encoder.env_corr",
+        "rule": "no_decrease",
+        "value": 0.002
+      },
+      {
+        "mode": "dstar",
+        "metric": "encoder.pitch_cents_median",
+        "rule": "no_increase",
+        "value": 0.5
+      },
+      {
+        "mode": "dstar",
+        "metric": "encoder.octave_error_rate",
+        "rule": "no_increase",
+        "value": 0.005
+      },
+      {
+        "mode": "dstar",
+        "metric": "encoder.voicing_agreement_mean",
+        "rule": "no_decrease",
+        "value": 0.005
+      },
+      {
+        "mode": "dstar",
+        "metric": "encoder.rail_excess_samples",
+        "rule": "max",
+        "value": 1.0
+      },
+      {
+        "mode": [
+          "dstar",
+          "p25",
+          "r33"
+        ],
+        "metric": "speech.pcm_changed_vectors",
+        "rule": "max",
+        "value": 0
+      }
+    ]
+  },
+  "ambe2450-imbe-encoders": {
+    "description": "AMBE+2 and IMBE encoders: our encoding, decoded by this library, keeps DVSI's level, fits the input at least as well as DVSI's own encoding, stays on pitch and voices like DVSI, sends no tone frames for speech, and clips no more than a few samples where the input itself reaches the rails (t03, t04); the decoders and the D-STAR encoder are untouched (D-STAR's encoded bits identical, so the baseline must record encoder-row hashes).",
+    "partition": "validation",
+    "checks": [
+      {
+        "mode": [
+          "r33",
+          "p25"
+        ],
+        "metric": "encoder.alignment_failures",
+        "rule": "max",
+        "value": 0
+      },
+      {
+        "mode": [
+          "r33",
+          "p25"
+        ],
+        "metric": "encoder.level_gap_db",
+        "rule": "max",
+        "value": 0.5
+      },
+      {
+        "mode": [
+          "r33",
+          "p25"
+        ],
+        "metric": "encoder.silence_frame_rate",
+        "rule": "max",
+        "value": 0
+      },
+      {
+        "mode": [
+          "r33",
+          "p25"
+        ],
+        "metric": "encoder.lsd_db",
+        "rule": "max",
+        "value": 5.5
+      },
+      {
+        "mode": [
+          "r33",
+          "p25"
+        ],
+        "metric": "encoder.env_corr",
+        "rule": "min",
+        "value": 0.9
+      },
+      {
+        "mode": [
+          "r33",
+          "p25"
+        ],
+        "metric": "encoder.pitch_cents_median",
+        "rule": "max",
+        "value": 10.0
+      },
+      {
+        "mode": [
+          "r33",
+          "p25"
+        ],
+        "metric": "encoder.octave_error_rate",
+        "rule": "max",
+        "value": 0.01
+      },
+      {
+        "mode": [
+          "r33",
+          "p25"
+        ],
+        "metric": "encoder.voicing_agreement_mean",
+        "rule": "min",
+        "value": 0.8
+      },
+      {
+        "mode": [
+          "r33",
+          "p25"
+        ],
+        "metric": "encoder.rail_excess_samples",
+        "rule": "max",
+        "value": 2.0
+      },
+      {
+        "mode": "dstar",
+        "metric": "encoder.lsd_db",
+        "rule": "abs_delta_max",
+        "value": 0.0,
+        "worst": 0.0
+      },
+      {
+        "mode": "dstar",
+        "metric": "encoder.level_offset_db",
+        "rule": "abs_delta_max",
+        "value": 0.0,
+        "worst": 0.0
+      },
+      {
+        "mode": "dstar",
+        "metric": "encoder.env_corr",
+        "rule": "abs_delta_max",
+        "value": 0.0,
+        "worst": 0.0
+      },
+      {
+        "mode": "dstar",
+        "metric": "encoder.pitch_cents_median",
+        "rule": "abs_delta_max",
+        "value": 0.0,
+        "worst": 0.0
+      },
+      {
+        "mode": "dstar",
+        "metric": "encoder.voicing_agreement_mean",
+        "rule": "abs_delta_max",
+        "value": 0.0,
+        "worst": 0.0
+      },
+      {
+        "mode": "dstar",
+        "metric": "encoder.rows_changed_vectors",
+        "rule": "max",
+        "value": 0
+      },
+      {
+        "mode": [
+          "dstar",
+          "p25",
+          "r33"
+        ],
+        "metric": "speech.pcm_changed_vectors",
+        "rule": "max",
+        "value": 0
+      }
+    ]
+  },
+  "ambe2450-encoder-tones": {
+    "description": "AMBE+2 encoder tone frames: the tone indices and levels DVSI's encoder sends for its tone vectors, and few tone frames where DVSI sends voice.",
+    "partition": "tones",
+    "checks": [
+      {
+        "mode": "r33",
+        "metric": "tone.encoder_agreement_mean",
+        "rule": "min",
+        "value": 0.95
+      },
+      {
+        "mode": "r33",
+        "metric": "tone.encoder_extra_rate_mean",
+        "rule": "max",
+        "value": 0.02
+      },
+      {
+        "mode": "r33",
+        "metric": "tone.encoder_level_error_ad_mean",
+        "rule": "max",
+        "value": 0.25
+      }
+    ]
+  },
+  "dstar-encoder-tones": {
+    "description": "D-STAR encoder tone frames: the tone indices and volumes DVSI's encoder sends for its D-STAR tone vectors, and few tone frames where DVSI sends voice (KNOX tones among them); the AMBE+2 encoder's tone frames and both decoders' tone output unchanged.",
+    "partition": "tones",
+    "checks": [
+      {
+        "mode": "dstar",
+        "metric": "tone.encoder_agreement_mean",
+        "rule": "min",
+        "value": 0.95
+      },
+      {
+        "mode": "dstar",
+        "metric": "tone.encoder_extra_rate_mean",
+        "rule": "max",
+        "value": 0.02
+      },
+      {
+        "mode": "dstar",
+        "metric": "tone.encoder_level_error_volume_mean",
+        "rule": "max",
+        "value": 0.25
+      },
+      {
+        "mode": "r33",
+        "metric": "tone.encoder_agreement",
+        "rule": "abs_delta_max",
+        "value": 0.0,
+        "worst": 0.0
+      },
+      {
+        "mode": "r33",
+        "metric": "tone.encoder_extra_rate",
+        "rule": "abs_delta_max",
+        "value": 0.0,
+        "worst": 0.0
+      },
+      {
+        "mode": "r33",
+        "metric": "tone.encoder_level_error_ad",
+        "rule": "abs_delta_max",
+        "value": 0.0,
+        "worst": 0.0
+      },
+      {
+        "mode": [
+          "dstar",
+          "r33"
+        ],
+        "metric": "tone.level_abs_error_db",
+        "rule": "abs_delta_max",
+        "value": 0.0,
+        "worst": 0.0
+      },
+      {
+        "mode": [
+          "dstar",
+          "r33"
+        ],
+        "metric": "tone.detector_agreement",
+        "rule": "abs_delta_max",
+        "value": 0.0,
+        "worst": 0.0
+      }
+    ]
+  },
+  "call-progress-timing": {
+    "description": "Call-progress tones sent once they fill three spans and held two frames after, as DVSI's encoders send them: no vector gets many tone frames where DVSI sends voice (the 40-45 ms bursts of cpvbad got 45 frames), agreement with DVSI's tone frames does not fall, levels hold, and both decoders' tone output is unchanged.",
+    "partition": "tones",
+    "checks": [
+      {
+        "mode": [
+          "dstar",
+          "r33"
+        ],
+        "metric": "tone.encoder_extra_rate",
+        "rule": "max",
+        "value": 0.03
+      },
+      {
+        "mode": [
+          "dstar",
+          "r33"
+        ],
+        "metric": "tone.encoder_agreement",
+        "rule": "no_decrease"
+      },
+      {
+        "mode": [
+          "dstar",
+          "r33"
+        ],
+        "metric": "tone.encoder_extra_rate",
+        "rule": "no_increase"
+      },
+      {
+        "mode": "r33",
+        "metric": "tone.encoder_level_error_ad_mean",
+        "rule": "max",
+        "value": 0.25
+      },
+      {
+        "mode": "dstar",
+        "metric": "tone.encoder_level_error_volume_mean",
+        "rule": "max",
+        "value": 0.25
+      },
+      {
+        "mode": [
+          "dstar",
+          "r33"
+        ],
+        "metric": "tone.level_abs_error_db",
+        "rule": "abs_delta_max",
+        "value": 0.0,
+        "worst": 0.0
+      },
+      {
+        "mode": [
+          "dstar",
+          "r33"
+        ],
+        "metric": "tone.detector_agreement",
+        "rule": "abs_delta_max",
+        "value": 0.0,
+        "worst": 0.0
+      }
+    ]
+  },
+  "tone-edges": {
+    "description": "DTMF, KNOX and single tones sent for the frames whose span they fill at least 45% wherever they start within the detector's blocks, and where one changes directly to another, the frame holding both carrying the newer tone if it is a DTMF or KNOX tone filling the span's newest half, else the older if it fills the oldest half, as DVSI's encoders send them: agreement with DVSI's tone frames rises in both encoders, tone frames where DVSI sends voice stay rare, levels hold, and both decoders' tone output is unchanged.",
+    "partition": "tones",
+    "checks": [
+      {
+        "mode": [
+          "dstar",
+          "r33"
+        ],
+        "metric": "tone.encoder_agreement",
+        "rule": "no_decrease"
+      },
+      {
+        "mode": [
+          "dstar",
+          "r33"
+        ],
+        "metric": "tone.encoder_agreement_mean",
+        "rule": "min",
+        "value": 0.975
+      },
+      {
+        "mode": [
+          "dstar",
+          "r33"
+        ],
+        "metric": "tone.encoder_extra_rate",
+        "rule": "max",
+        "value": 0.03
+      },
+      {
+        "mode": [
+          "dstar",
+          "r33"
+        ],
+        "metric": "tone.encoder_extra_rate_mean",
+        "rule": "max",
+        "value": 0.01
+      },
+      {
+        "mode": "r33",
+        "metric": "tone.encoder_level_error_ad_mean",
+        "rule": "max",
+        "value": 0.25
+      },
+      {
+        "mode": "dstar",
+        "metric": "tone.encoder_level_error_volume_mean",
+        "rule": "max",
+        "value": 0.25
+      },
+      {
+        "mode": [
+          "dstar",
+          "r33"
+        ],
+        "metric": "tone.level_abs_error_db",
+        "rule": "abs_delta_max",
+        "value": 0.0,
+        "worst": 0.0
+      },
+      {
+        "mode": [
+          "dstar",
+          "r33"
+        ],
+        "metric": "tone.detector_agreement",
+        "rule": "abs_delta_max",
+        "value": 0.0,
+        "worst": 0.0
+      }
+    ]
+  },
+  "dvsi-parity-development": {
+    "description": "DVSI parity (D-STAR absolute gain and shelf; rate-33 bit layout, pitch law and error counts; output high-pass phase; voiced and unvoiced render gains): our decode of DVSI's bits is no further from DVSI's decoder, the IMBE encoder's bits are unchanged, and the D-STAR and rate-33 encoders' output, decoded by one decoder, is no further from DVSI's encoding.",
+    "partition": "development",
+    "checks": [
+      {
+        "mode": [
+          "dstar",
+          "p25",
+          "r33"
+        ],
+        "metric": "vs_dvsi.lsd_db",
+        "rule": "no_increase",
+        "value": 0.01
+      },
+      {
+        "mode": [
+          "dstar",
+          "p25",
+          "r33"
+        ],
+        "metric": "vs_dvsi.env_corr",
+        "rule": "no_decrease",
+        "value": 0.002
+      },
+      {
+        "mode": "p25",
+        "metric": "encoder.rows_changed_vectors",
+        "rule": "max",
+        "value": 0
+      },
+      {
+        "mode": [
+          "dstar",
+          "r33"
+        ],
+        "metric": "encoder.vs_dvsi_bits.lsd_db",
+        "rule": "no_increase",
+        "value": 0.01
+      }
+    ]
+  },
+  "dvsi-parity-validation": {
+    "description": "DVSI parity (D-STAR absolute gain and shelf; rate-33 bit layout, pitch law and error counts; output high-pass phase; voiced and unvoiced render gains): our decode of DVSI's bits is no further from DVSI's decoder, the IMBE encoder's bits are unchanged, and the D-STAR and rate-33 encoders' output, decoded by one decoder, is no further from DVSI's encoding.",
+    "partition": "validation",
+    "checks": [
+      {
+        "mode": [
+          "dstar",
+          "p25",
+          "r33"
+        ],
+        "metric": "vs_dvsi.lsd_db",
+        "rule": "no_increase",
+        "value": 0.01
+      },
+      {
+        "mode": [
+          "dstar",
+          "p25",
+          "r33"
+        ],
+        "metric": "vs_dvsi.env_corr",
+        "rule": "no_decrease",
+        "value": 0.002
+      },
+      {
+        "mode": "p25",
+        "metric": "encoder.rows_changed_vectors",
+        "rule": "max",
+        "value": 0
+      },
+      {
+        "mode": [
+          "dstar",
+          "r33"
+        ],
+        "metric": "encoder.vs_dvsi_bits.lsd_db",
+        "rule": "no_increase",
+        "value": 0.01
+      }
+    ]
+  },
+  "dvsi-parity-final": {
+    "description": "DVSI parity (D-STAR absolute gain and shelf; rate-33 bit layout, pitch law and error counts; output high-pass phase; voiced and unvoiced render gains): our decode of DVSI's bits is no further from DVSI's decoder, the IMBE encoder's bits are unchanged, and the D-STAR and rate-33 encoders' output, decoded by one decoder, is no further from DVSI's encoding.",
+    "partition": "final",
+    "checks": [
+      {
+        "mode": [
+          "dstar",
+          "p25",
+          "r33"
+        ],
+        "metric": "vs_dvsi.lsd_db",
+        "rule": "no_increase",
+        "value": 0.01
+      },
+      {
+        "mode": [
+          "dstar",
+          "p25",
+          "r33"
+        ],
+        "metric": "vs_dvsi.env_corr",
+        "rule": "no_decrease",
+        "value": 0.002
+      },
+      {
+        "mode": "p25",
+        "metric": "encoder.rows_changed_vectors",
+        "rule": "max",
+        "value": 0
+      },
+      {
+        "mode": [
+          "dstar",
+          "r33"
+        ],
+        "metric": "encoder.vs_dvsi_bits.lsd_db",
+        "rule": "no_increase",
+        "value": 0.01
+      }
+    ]
+  },
+  "dvsi-parity-tones": {
+    "description": "DVSI parity: no tone vector's tone output agrees less often with DVSI's decoder, plays a wrong tone more often, or has its encoder tone frames agree less often with DVSI's.",
+    "partition": "tones",
+    "checks": [
+      {
+        "mode": [
+          "dstar",
+          "r33"
+        ],
+        "metric": "tone.detector_agreement",
+        "rule": "all_no_decrease"
+      },
+      {
+        "mode": [
+          "dstar",
+          "r33"
+        ],
+        "metric": "tone.wrong_tone_fraction",
+        "rule": "all_no_increase"
+      },
+      {
+        "mode": [
+          "dstar",
+          "r33"
+        ],
+        "metric": "tone.encoder_agreement",
+        "rule": "all_no_decrease"
+      }
+    ]
+  },
+  "dvsi-parity-channel": {
+    "description": "DVSI parity under channel errors (dam at 1.1-10.6% bit errors): at no error rate do our mute decisions agree less often with DVSI's, for hard or soft decisions, and on the frames neither run nor DVSI mutes (at least a tenth of those DVSI plays) our hard-decision output is no further from DVSI's.",
+    "partition": "channel",
+    "checks": [
+      {
+        "mode": [
+          "dstar",
+          "p25",
+          "r33"
+        ],
+        "metric": "channel.hd.mute_agreement",
+        "rule": "all_no_decrease"
+      },
+      {
+        "mode": [
+          "dstar",
+          "p25",
+          "r33"
+        ],
+        "metric": "channel.sd.mute_agreement",
+        "rule": "all_no_decrease"
+      },
+      {
+        "mode": [
+          "dstar",
+          "p25",
+          "r33"
+        ],
+        "metric": "channel.hd.lsd_common_db",
+        "rule": "no_increase",
+        "value": 0.01,
+        "min_coverage": 0.1
+      }
+    ]
+  },
+  "dstar-lost-frames": {
+    "description": "D-STAR b0 125..127 decode as lost frames and the encoder stops sending b0 124/125: DVSI's speech bits decode unchanged, and our encoding loses nothing against the input when both encodings are decoded by a decoder that plays b0 125 as voice (the decoder before this change), so both runs score the same frames.",
+    "partition": "validation",
+    "checks": [
+      {
+        "mode": "dstar",
+        "metric": "encoder.lsd_db",
+        "rule": "no_increase",
+        "value": 0.02
+      },
+      {
+        "mode": "dstar",
+        "metric": "encoder.env_corr",
+        "rule": "no_decrease",
+        "value": 0.002
+      },
+      {
+        "mode": "dstar",
+        "metric": "encoder.level_offset_db",
+        "rule": "abs_delta_max",
+        "value": 0.3
+      },
+      {
+        "mode": "dstar",
+        "metric": "encoder.pitch_cents_median",
+        "rule": "no_increase",
+        "value": 0.5
+      },
+      {
+        "mode": "dstar",
+        "metric": "encoder.octave_error_rate",
+        "rule": "no_increase",
+        "value": 0.005
+      },
+      {
+        "mode": "dstar",
+        "metric": "encoder.voicing_agreement_mean",
+        "rule": "no_decrease",
+        "value": 0.005
+      },
+      {
+        "mode": "dstar",
+        "metric": "encoder.pcm_rail_samples",
+        "rule": "no_increase"
+      },
+      {
+        "mode": [
+          "dstar",
+          "p25",
+          "r33"
+        ],
+        "metric": "speech.pcm_changed_vectors",
+        "rule": "max",
+        "value": 0
+      }
+    ]
+  },
+  "dstar-repeat-limit-mute": {
+    "description": "D-STAR's repeat-limit mute fades out, keeps the prediction history and mutes at DVSI's level: DVSI's clean speech bits, which never reach the repeat limit, decode unchanged in every mode.",
+    "partition": "validation",
+    "checks": [
+      {
+        "mode": [
+          "dstar",
+          "p25",
+          "r33"
+        ],
+        "metric": "speech.pcm_changed_vectors",
+        "rule": "max",
+        "value": 0
+      }
+    ]
+  },
+  "dstar-c0-uncorrectable-channel": {
+    "description": "D-STAR hard decisions play a frame with an uncorrectable C0 word as a lost frame that still predicts the next frame, and repeat no frame on its corrected-error count (#155): under channel errors (dam at 1.1-10.6% bit errors) our D-STAR mute decisions agree no less often with DVSI's, for hard or soft decisions, and on the loud frames neither run nor DVSI mutes our D-STAR output is no further from DVSI's, for hard or soft decisions.",
+    "partition": "channel",
+    "checks": [
+      {
+        "mode": "dstar",
+        "metric": "channel.hd.mute_agreement",
+        "rule": "all_no_decrease"
+      },
+      {
+        "mode": "dstar",
+        "metric": "channel.sd.mute_agreement",
+        "rule": "all_no_decrease"
+      },
+      {
+        "mode": "dstar",
+        "metric": "channel.hd.lsd_common_db",
+        "rule": "no_increase",
+        "value": 0.0,
+        "min_coverage": 0.1
+      },
+      {
+        "mode": "dstar",
+        "metric": "channel.sd.lsd_common_db",
+        "rule": "no_increase",
+        "value": 0.01,
+        "min_coverage": 0.1
+      }
+    ]
+  },
+  "dstar-c0-uncorrectable-speech": {
+    "description": "The same change leaves DVSI's error-free speech bits decoding unchanged in every mode.",
+    "partition": "validation",
+    "checks": [
+      {
+        "mode": [
+          "dstar",
+          "p25",
+          "r33"
+        ],
+        "metric": "speech.pcm_changed_vectors",
+        "rule": "max",
+        "value": 0
+      }
+    ]
+  },
+  "dstar-error-level-mute-channel": {
+    "description": "D-STAR hard decisions mute on an error level that counts parity bits and integrates slowly (0.99 level + corrected bits, above 342; #155): under channel errors (dam at 1.1-10.6% bit errors) our D-STAR mute decisions agree no less often with DVSI's for hard or soft decisions; their mean over the four hard-decision vectors is at least 0.9975 (with the 1-5% vectors in full agreement, 0.99 at 10%); and on the loud frames neither run nor DVSI mutes our D-STAR output is on average no further from DVSI's, for hard or soft decisions, by more than 0.01 dB.",
+    "partition": "channel",
+    "checks": [
+      {
+        "mode": "dstar",
+        "metric": "channel.hd.mute_agreement",
+        "rule": "all_no_decrease"
+      },
+      {
+        "mode": "dstar",
+        "metric": "channel.hd.mute_agreement",
+        "rule": "min",
+        "value": 0.9975
+      },
+      {
+        "mode": "dstar",
+        "metric": "channel.sd.mute_agreement",
+        "rule": "all_no_decrease"
+      },
+      {
+        "mode": "dstar",
+        "metric": "channel.hd.lsd_common_db",
+        "rule": "no_increase",
+        "value": 0.01,
+        "min_coverage": 0.1
+      },
+      {
+        "mode": "dstar",
+        "metric": "channel.sd.lsd_common_db",
+        "rule": "no_increase",
+        "value": 0.01,
+        "min_coverage": 0.1
+      }
+    ]
+  },
+  "dstar-error-level-mute-speech": {
+    "description": "The same change leaves DVSI's error-free speech bits decoding unchanged in every mode.",
+    "partition": "validation",
+    "checks": [
+      {
+        "mode": [
+          "dstar",
+          "p25",
+          "r33"
+        ],
+        "metric": "speech.pcm_changed_vectors",
+        "rule": "max",
+        "value": 0
+      }
+    ]
+  },
+  "dstar-tone-volume-fade-tones": {
+    "description": "A D-STAR tone that goes on at another volume moves to it over the first 80 samples before clipping (#155): on DVSI's tone vectors no steady-tone window of ours agrees less often with DVSI's, plays a wrong tone more often, or is further from DVSI's level, frequency or balance (the frames where the volume changes are scored outside the scoreboard).",
+    "partition": "tones",
+    "checks": [
+      {
+        "mode": "dstar",
+        "metric": "tone.detector_agreement",
+        "rule": "all_no_decrease"
+      },
+      {
+        "mode": "dstar",
+        "metric": "tone.wrong_tone_fraction",
+        "rule": "all_no_increase"
+      },
+      {
+        "mode": "dstar",
+        "metric": "tone.level_abs_error_db",
+        "rule": "all_no_increase",
+        "value": 0.01
+      },
+      {
+        "mode": "dstar",
+        "metric": "tone.freq_rel_error",
+        "rule": "all_no_increase",
+        "value": 0.0001
+      },
+      {
+        "mode": "dstar",
+        "metric": "tone.balance_abs_error_db",
+        "rule": "all_no_increase",
+        "value": 0.01
+      }
+    ]
+  },
+  "dstar-tone-volume-fade-speech": {
+    "description": "The same change leaves DVSI's speech bits decoding unchanged in every mode.",
+    "partition": "validation",
+    "checks": [
+      {
+        "mode": [
+          "dstar",
+          "p25",
+          "r33"
+        ],
+        "metric": "speech.pcm_changed_vectors",
+        "rule": "max",
+        "value": 0
+      }
+    ]
+  },
+  "voiced-amplitude-development": {
+    "description": "Voiced amplitude (every harmonic interpolated at steady pitch, its fourth root moving linearly, as on DVSI's AMBE-3000): in every mode our decode of DVSI's bits comes closer to DVSI's decoder by at least 0.1 dB of log-spectral distance, its envelope correlation with DVSI's and its distance from the input get no worse, its level moves by at most 0.1 dB, and the encoders' bits are unchanged.",
+    "partition": "development",
+    "checks": [
+      {
+        "mode": [
+          "dstar",
+          "p25",
+          "r33"
+        ],
+        "metric": "vs_dvsi.lsd_db",
+        "rule": "decrease",
+        "value": 0.1
+      },
+      {
+        "mode": [
+          "dstar",
+          "p25",
+          "r33"
+        ],
+        "metric": "vs_dvsi.env_corr",
+        "rule": "no_decrease",
+        "value": 0.0
+      },
+      {
+        "mode": [
+          "dstar",
+          "p25",
+          "r33"
+        ],
+        "metric": "ours.lsd_db",
+        "rule": "no_increase",
+        "value": 0.0
+      },
+      {
+        "mode": [
+          "dstar",
+          "p25",
+          "r33"
+        ],
+        "metric": "vs_dvsi.level_offset_db",
+        "rule": "abs_delta_max",
+        "value": 0.1
+      },
+      {
+        "mode": [
+          "dstar",
+          "p25",
+          "r33"
+        ],
+        "metric": "encoder.rows_changed_vectors",
+        "rule": "max",
+        "value": 0
+      }
+    ]
+  },
+  "voiced-amplitude-validation": {
+    "description": "Voiced amplitude (every harmonic interpolated at steady pitch, its fourth root moving linearly, as on DVSI's AMBE-3000): in every mode our decode of DVSI's bits comes closer to DVSI's decoder by at least 0.1 dB of log-spectral distance, its envelope correlation with DVSI's and its distance from the input get no worse, its level moves by at most 0.1 dB, and the encoders' bits are unchanged.",
+    "partition": "validation",
+    "checks": [
+      {
+        "mode": [
+          "dstar",
+          "p25",
+          "r33"
+        ],
+        "metric": "vs_dvsi.lsd_db",
+        "rule": "decrease",
+        "value": 0.1
+      },
+      {
+        "mode": [
+          "dstar",
+          "p25",
+          "r33"
+        ],
+        "metric": "vs_dvsi.env_corr",
+        "rule": "no_decrease",
+        "value": 0.0
+      },
+      {
+        "mode": [
+          "dstar",
+          "p25",
+          "r33"
+        ],
+        "metric": "ours.lsd_db",
+        "rule": "no_increase",
+        "value": 0.0
+      },
+      {
+        "mode": [
+          "dstar",
+          "p25",
+          "r33"
+        ],
+        "metric": "vs_dvsi.level_offset_db",
+        "rule": "abs_delta_max",
+        "value": 0.1
+      },
+      {
+        "mode": [
+          "dstar",
+          "p25",
+          "r33"
+        ],
+        "metric": "encoder.rows_changed_vectors",
+        "rule": "max",
+        "value": 0
+      }
+    ]
+  },
+  "voiced-amplitude-final": {
+    "description": "Voiced amplitude (every harmonic interpolated at steady pitch, its fourth root moving linearly, as on DVSI's AMBE-3000): in every mode our decode of DVSI's bits comes closer to DVSI's decoder by at least 0.1 dB of log-spectral distance, its envelope correlation with DVSI's and its distance from the input get no worse, its level moves by at most 0.1 dB, and the encoders' bits are unchanged.",
+    "partition": "final",
+    "checks": [
+      {
+        "mode": [
+          "dstar",
+          "p25",
+          "r33"
+        ],
+        "metric": "vs_dvsi.lsd_db",
+        "rule": "decrease",
+        "value": 0.1
+      },
+      {
+        "mode": [
+          "dstar",
+          "p25",
+          "r33"
+        ],
+        "metric": "vs_dvsi.env_corr",
+        "rule": "no_decrease",
+        "value": 0.0
+      },
+      {
+        "mode": [
+          "dstar",
+          "p25",
+          "r33"
+        ],
+        "metric": "ours.lsd_db",
+        "rule": "no_increase",
+        "value": 0.0
+      },
+      {
+        "mode": [
+          "dstar",
+          "p25",
+          "r33"
+        ],
+        "metric": "vs_dvsi.level_offset_db",
+        "rule": "abs_delta_max",
+        "value": 0.1
+      },
+      {
+        "mode": [
+          "dstar",
+          "p25",
+          "r33"
+        ],
+        "metric": "encoder.rows_changed_vectors",
+        "rule": "max",
+        "value": 0
+      }
+    ]
+  },
+  "voiced-amplitude-channel": {
+    "description": "Voiced amplitude under channel errors (dam at 1.1-10.6% bit errors): in every mode our mute decisions agree with DVSI's as often as before at every error rate, hard or soft, and on the frames neither run nor DVSI mutes our hard-decision output is no further from DVSI's.",
+    "partition": "channel",
+    "checks": [
+      {
+        "mode": [
+          "dstar",
+          "p25",
+          "r33"
+        ],
+        "metric": "channel.hd.mute_agreement",
+        "rule": "all_no_decrease"
+      },
+      {
+        "mode": [
+          "dstar",
+          "p25",
+          "r33"
+        ],
+        "metric": "channel.sd.mute_agreement",
+        "rule": "all_no_decrease"
+      },
+      {
+        "mode": [
+          "dstar",
+          "p25",
+          "r33"
+        ],
+        "metric": "channel.hd.lsd_common_db",
+        "rule": "no_increase",
+        "value": 0.0,
+        "min_coverage": 0.1
+      }
+    ]
+  },
+  "voiced-amplitude-tones": {
+    "description": "Voiced amplitude on the tone vectors: no D-STAR or rate-33 tone vector's tone output agrees less often with DVSI's decoder or plays a wrong tone more often.",
+    "partition": "tones",
+    "checks": [
+      {
+        "mode": [
+          "dstar",
+          "r33"
+        ],
+        "metric": "tone.detector_agreement",
+        "rule": "all_no_decrease"
+      },
+      {
+        "mode": [
+          "dstar",
+          "r33"
+        ],
+        "metric": "tone.wrong_tone_fraction",
+        "rule": "all_no_increase"
+      }
+    ]
+  }
+}

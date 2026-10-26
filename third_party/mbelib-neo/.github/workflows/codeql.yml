@@ -1,0 +1,77 @@
+# SPDX-License-Identifier: GPL-2.0-or-later
+name: codeql
+
+on:
+  workflow_dispatch: {}
+  push:
+    branches: [main, master]
+  pull_request:
+    branches: [main, master]
+  schedule:
+    - cron: "23 4 * * 1"
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+jobs:
+  analyze:
+    name: analyze (${{ matrix.language }})
+    runs-on: ubuntu-latest
+    concurrency:
+      group: ${{ matrix.ci_group }}
+      cancel-in-progress: false
+      queue: max
+    permissions:
+      contents: read
+      security-events: write
+    strategy:
+      fail-fast: false
+      max-parallel: 2
+      matrix:
+        include:
+          - language: c-cpp
+            build-mode: manual
+            ci_group: ci-worker-10
+          - language: actions
+            build-mode: ""
+            ci_group: ci-fast-2
+          - language: python
+            build-mode: ""
+            ci_group: ci-fast-1
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      - name: Initialize CodeQL
+        if: matrix.build-mode == ''
+        uses: github/codeql-action/init@24c54180a607b1449ed407dd24f251e4e9147c8d # v4
+        with:
+          languages: ${{ matrix.language }}
+          config-file: ./.github/codeql/codeql-config.yml
+
+      - name: Initialize CodeQL with build mode
+        if: matrix.build-mode != ''
+        # The manually traced C build uses a full database; overlay mode only
+        # supports build-mode:none and otherwise emits a fallback warning.
+        env:
+          CODEQL_OVERLAY_DATABASE_MODE: none
+        uses: github/codeql-action/init@24c54180a607b1449ed407dd24f251e4e9147c8d # v4
+        with:
+          languages: ${{ matrix.language }}
+          build-mode: ${{ matrix.build-mode }}
+          config-file: ./.github/codeql/codeql-config.yml
+
+      - name: Configure C/C++ database build
+        if: matrix.language == 'c-cpp'
+        run: cmake --preset dev-debug -DMBELIB_BUILD_TOOLS=ON
+
+      - name: Build first-party C/C++ database
+        if: matrix.language == 'c-cpp'
+        run: cmake --build --preset dev-debug --target mbe-codeql-first-party -j
+
+      - name: Perform CodeQL Analysis
+        uses: github/codeql-action/analyze@24c54180a607b1449ed407dd24f251e4e9147c8d # v4
