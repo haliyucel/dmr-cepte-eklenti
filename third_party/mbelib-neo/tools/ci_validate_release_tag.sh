@@ -1,0 +1,172 @@
+#!/usr/bin/env bash
+# SPDX-License-Identifier: GPL-2.0-or-later
+set -euo pipefail
+
+repo_root="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+# Trusted release signing keys: parallel arrays (indexed, for macOS bash 3.2)
+# pairing each key file in release-keys/ with its pinned primary fingerprint.
+trusted_release_key_files=(
+  "${repo_root}/release-keys/arancormonk-desktop-2026.pgp"
+  "${repo_root}/release-keys/arancormonk-laptop-2026.pgp"
+)
+trusted_release_key_fingerprints=(
+  "5FAF0C47C8E1F95D33CD83B1E42E43ADD853F280"
+  "35619AC50DF5FB9EA053296E5C77FAD44C3E67A7"
+)
+protected_main_ref="refs/remotes/origin/main"
+
+project_version="$(
+  sed -nE 's/^[[:space:]]*project\([[:space:]]*mbelib-neo[[:space:]]+VERSION[[:space:]]+([0-9]+[.][0-9]+[.][0-9]+).*$/\1/p' \
+    "${repo_root}/CMakeLists.txt" |
+    head -n1
+)"
+
+if [[ -z "${project_version}" ]]; then
+  echo "Failed to read mbelib-neo project version from CMakeLists.txt." >&2
+  exit 1
+fi
+
+ref="${GITHUB_REF:-}"
+tag="${GITHUB_REF_NAME:-}"
+event="${GITHUB_EVENT_NAME:-}"
+created="${RELEASE_TAG_CREATED:-${GITHUB_EVENT_CREATED:-}}"
+recovery=0
+rebuild="${RELEASE_REBUILD_PACKAGES:-false}"
+aur_only="${RELEASE_AUR_ONLY:-false}"
+if [[ ("$rebuild" != true && "$rebuild" != false) || ("$aur_only" != true && "$aur_only" != false) ]]; then
+  echo "Release recovery options must be true or false." >&2
+  exit 1
+fi
+if [[ "$rebuild" == true && "$aur_only" == true ]]; then
+  echo "Choose either package rebuilding or AUR-only recovery." >&2
+  exit 1
+fi
+if [[ -n "${RELEASE_RECOVERY_TAG:-}" || -n "${RELEASE_RECOVERY_RUN_ID:-}" || "$rebuild" == true || "$aur_only" == true ]]; then
+  if [[ "${event}" != "workflow_dispatch" || ! "${RELEASE_RECOVERY_TAG:-}" =~ ^v[0-9]+[.][0-9]+[.][0-9]+$ || ! "${RELEASE_RECOVERY_RUN_ID:-}" =~ ^[0-9]+$ ]]; then
+    echo "Release recovery requires workflow_dispatch with an existing tag and numeric source run ID." >&2
+    exit 1
+  fi
+  recovery=1
+  if [[ ("$rebuild" == true || "$aur_only" == true) && "$ref" != refs/heads/main ]]; then
+    echo "Release package rebuilding and AUR-only recovery require the reviewed workflow on main." >&2
+    exit 1
+  fi
+  tag="${RELEASE_RECOVERY_TAG}"
+  ref="refs/tags/${tag}"
+fi
+
+if [[ "${ref}" != refs/tags/v* ]]; then
+  {
+    echo "version="
+    echo "archive_prefix="
+  } >> "${GITHUB_OUTPUT:-/dev/null}"
+  echo "Not a release tag; project version is ${project_version}."
+  exit 0
+fi
+
+if [[ ! "${tag}" =~ ^v[0-9]+[.][0-9]+[.][0-9]+$ ]]; then
+  echo "Release tags must use vX.Y.Z format; got '${tag}'." >&2
+  exit 1
+fi
+
+if [[ "$recovery" == 0 && ("${event}" != "push" || "${created}" != "true") ]]; then
+  echo "Release publishing requires a newly created version tag push; refusing to publish ${tag}." >&2
+  exit 1
+fi
+
+if ! command -v gpg > /dev/null 2>&1; then
+  echo "gpg is required to verify release tag signatures." >&2
+  exit 1
+fi
+
+if ! git rev-parse -q --verify "refs/tags/${tag}^{tag}" > /dev/null; then
+  git fetch --force origin "refs/tags/${tag}:refs/tags/${tag}" > /dev/null 2>&1 || true
+fi
+
+if ! git rev-parse -q --verify "refs/tags/${tag}^{tag}" > /dev/null; then
+  echo "Release tag ${tag} must be an annotated signed tag; lightweight tags are not allowed." >&2
+  exit 1
+fi
+
+if ! git fetch --force origin "+refs/heads/main:${protected_main_ref}" > /dev/null 2>&1; then
+  echo "Failed to fetch protected main branch from origin." >&2
+  exit 1
+fi
+
+if [[ "$(git rev-parse --is-shallow-repository 2> /dev/null || echo false)" == "true" ]]; then
+  if ! git fetch --force --unshallow origin "+refs/heads/main:${protected_main_ref}" > /dev/null 2>&1; then
+    echo "Failed to fetch enough history to validate ${tag} against origin/main." >&2
+    exit 1
+  fi
+fi
+
+tag_commit="$(git rev-parse "refs/tags/${tag}^{commit}")"
+if [[ "$recovery" == 1 ]]; then
+  # The recovery workflow can be newer than the immutable release source.
+  project_version="$(git show "${tag_commit}:CMakeLists.txt" |
+    sed -nE 's/^[[:space:]]*project\([[:space:]]*mbelib-neo[[:space:]]+VERSION[[:space:]]+([0-9]+[.][0-9]+[.][0-9]+).*$/\1/p' |
+    head -n1)"
+fi
+version="${tag#v}"
+if [[ "${version}" != "${project_version}" ]]; then
+  echo "Tag ${tag} does not match project version ${project_version}." >&2
+  exit 1
+fi
+main_commit="$(git rev-parse "${protected_main_ref}^{commit}")"
+if ! git merge-base --is-ancestor "${tag_commit}" "${main_commit}"; then
+  echo "Release tag ${tag} target ${tag_commit} is not contained in origin/main ${main_commit}." >&2
+  exit 1
+fi
+
+gnupg_home="$(mktemp -d)"
+cleanup_gnupg_home() {
+  rm -rf "${gnupg_home}"
+}
+trap cleanup_gnupg_home EXIT
+chmod 700 "${gnupg_home}"
+
+for key_index in "${!trusted_release_key_files[@]}"; do
+  trusted_key="${trusted_release_key_files[${key_index}]}"
+  expected_fingerprint="${trusted_release_key_fingerprints[${key_index}]}"
+  if [[ ! -f "${trusted_key}" ]]; then
+    echo "Trusted release key not found: ${trusted_key}" >&2
+    exit 1
+  fi
+  key_file_primary_fingerprint="$(
+    GNUPGHOME="${gnupg_home}" gpg --batch --with-colons --show-keys "${trusted_key}" |
+      awk -F: '$1 == "pub" { want_fpr = 1; next } want_fpr && $1 == "fpr" { print $10; want_fpr = 0 }'
+  )"
+  if [[ "${key_file_primary_fingerprint}" != "${expected_fingerprint}" ]]; then
+    echo "Release key fingerprint mismatch for ${trusted_key}." >&2
+    echo "Expected: ${expected_fingerprint}" >&2
+    echo "Found:    ${key_file_primary_fingerprint:-<none>}" >&2
+    exit 1
+  fi
+  GNUPGHOME="${gnupg_home}" gpg --batch --import "${trusted_key}" > /dev/null
+  printf '%s:6:\n' "${expected_fingerprint}" |
+    GNUPGHOME="${gnupg_home}" gpg --batch --import-ownertrust > /dev/null
+done
+
+if ! GNUPGHOME="${gnupg_home}" git verify-tag "${tag}" > /dev/null; then
+  echo "Release tag ${tag} is not signed by a trusted mbelib-neo release key." >&2
+  exit 1
+fi
+
+if [[ "$recovery" == 1 ]]; then
+  recovery_args=()
+  if [[ "$aur_only" == true ]]; then
+    recovery_args+=(--aur-only)
+  elif [[ "$rebuild" == true ]]; then
+    recovery_args+=(--rebuild)
+  fi
+  RELEASE_TAG="$tag" RELEASE_COMMIT="$tag_commit" python3 "${repo_root}/tools/ci_verify_release_recovery.py" "${recovery_args[@]}"
+fi
+
+{
+  echo "tag=${tag}"
+  echo "commit=${tag_commit}"
+  echo "version=${project_version}"
+  echo "archive_prefix=mbelib-neo-${project_version}"
+} >> "${GITHUB_OUTPUT:-/dev/null}"
+
+echo "Validated release tag ${tag} for mbelib-neo ${project_version}."
