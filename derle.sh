@@ -31,7 +31,9 @@ for ABI in arm64-v8a armeabi-v7a x86_64; do
     -DMBELIB_ENABLE_NATIVE=OFF -DMBELIB_WARNINGS_AS_ERRORS=OFF \
     -DFETCHCONTENT_SOURCE_DIR_MBELIB_PFFFT="$KOK/third_party/pffft" -DFETCHCONTENT_FULLY_DISCONNECTED=ON
   "$CMAKE" --build "$B" --target mbe-static
-  "$CC" --target="$HEDEF" -shared -fPIC -O2 -std=c99 -fvisibility=hidden -Wall \
+  # -s: NDK arac zinciri -g ekliyor; hata ayiklama bilgisi ve derleyen makinenin
+  # yollari ikiliye girmesin. Disa acik (dinamik) semboller kalir.
+  "$CC" --target="$HEDEF" -shared -fPIC -O2 -std=c99 -fvisibility=hidden -Wall -s \
     -I "$KOK/third_party/mbelib-neo/include" -I "$B/include" \
     -o "$KOK/vocoder_plugin.android.$AD" "$KOK/src/vocoder_plugin.c" "$B/libmbe-neo.a" -lm \
     -Wl,--exclude-libs,ALL -Wl,--gc-sections -Wl,-z,max-page-size=16384 -Wl,--no-undefined -Wl,--build-id
