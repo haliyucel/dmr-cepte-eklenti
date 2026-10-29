@@ -26,8 +26,9 @@
  *    then reduced to the four 1 kHz bits D-STAR transmits by an
  *    energy-weighted choice.
  *  - Every parameter is quantized against the exact pitch law, harmonic
- *    count and tables the decoder dequantizes with (AmbePlusVuv/AmbePlusDg/
- *    AmbePlusPRBA24/AmbePlusPRBA58/AmbePlusHOCb5..b8), so the
+ *    count, voicing rule (mbe_ambe2400_harmonic_voiced()) and tables the
+ *    decoder dequantizes with (AmbePlusDg/AmbePlusPRBA24/AmbePlusPRBA58/
+ *    AmbePlusHOCb5..b8), so the
  *    reconstructed frame is bit-compatible with this library's
  *    mbe_decodeAmbe2400Parms()/mbe_processAmbe3600x2400*() path and follows
  *    the D-STAR AMBE bit layout (interleave, scrambler and Golay parity
@@ -175,22 +176,32 @@ ambe2400_enc_soft_voicing(float energy, float error, float threshold) {
  * (each covers two columns) by the energy-weighted squared error of
  * US 8,595,002. Columns follow the decoder's floor(16 l f0) assignment, so a
  * decision lands on the harmonics it was measured from; ties and empty bands
- * are unvoiced.
+ * are unvoiced. A column of mostly background noise counts as unvoiced in the
+ * cost, so a 1 kHz bit voices it only when the other column outweighs it.
  */
 static void
 ambe2400_enc_voicing(struct ambe_enc_frame* q, const struct mbe_analysis_state* state,
                      const struct mbe_analysis_result* res, unsigned char columns[MBE_ANALYSIS_COLUMNS]) {
     float energy[MBE_ANALYSIS_COLUMNS] = {0};
     float error[MBE_ANALYSIS_COLUMNS] = {0};
+    float band_energy[MBE_ANALYSIS_COLUMNS] = {0};
+    float noise[MBE_ANALYSIS_COLUMNS] = {0};
+    float noise_error[MBE_ANALYSIS_COLUMNS] = {0};
     float lv[MBE_ANALYSIS_COLUMNS];
     for (int l = 1; l <= q->L && l <= res->harmonics; l++) {
         int column = ambe2400_enc_column(q, l);
         float e = res->magnitude[l] * res->magnitude[l];
         energy[column] += e;
         error[column] += res->fit_error[l] * e;
+        band_energy[column] += res->fit_energy[l];
+        noise[column] += res->noise_energy[l];
+        noise_error[column] += res->noise_fit_error[l] * res->fit_energy[l];
     }
     for (int k = 0; k < MBE_ANALYSIS_COLUMNS; k++) {
-        lv[k] = ambe2400_enc_soft_voicing(energy[k], error[k], mbe_analysis_column_threshold(state, res, k + 1));
+        const float threshold = mbe_analysis_column_threshold(state, res, k + 1);
+        lv[k] = mbe_analysis_noise_dominated(band_energy[k], noise[k], noise_error[k])
+                    ? 0.0f
+                    : ambe2400_enc_soft_voicing(energy[k], error[k], threshold);
     }
     q->b[1] = 0;
     for (int bit = 0; bit < 4; bit++) {
@@ -290,11 +301,7 @@ ambe2400_enc_fill_parms(const struct ambe_enc_frame* q, mbe_parms* cur_mp) {
     cur_mp->K = 0;
     cur_mp->mutingThreshold = MBE_MUTING_THRESHOLD_AMBE;
     for (int l = 1; l <= q->L; l++) {
-        int jl = (int)((float)l * 16.0f * q->f0q);
-        if (jl > 7) {
-            jl = 7;
-        }
-        cur_mp->Vl[l] = AmbePlusVuv[q->b[1]][jl];
+        cur_mp->Vl[l] = mbe_ambe2400_harmonic_voiced(q->b[1], l, q->f0q);
         if (cur_mp->Vl[l] == 1) {
             cur_mp->K++;
         }
