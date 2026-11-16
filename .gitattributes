@@ -2,3 +2,7 @@ vocoder_plugin.android.* binary
 *.so binary
 *.sh text eol=lf
 SHA256SUMS text eol=lf
+# Ucuncu taraf kaynak yayin arsivinden BIREBIR: satir sonu donusumu yapilmaz
+# (Windows CRLF cikisi derlemenin okudugu dosyalari bozmasin, kopya arsivle ayni kalsin).
+third_party/** -text
+tools/semboller.txt text eol=lf

@@ -21,6 +21,7 @@
 #include "ambe3600x2450_const.h"
 #include "ambe3600x2450_internal.h"
 #include "mbe_adaptive.h"
+#include "mbe_subframe.h"
 #include "mbe_tone.h"
 #include "mbe_unvoiced_fft.h"
 #include "mbelib-neo/mbelib.h"
@@ -650,10 +651,10 @@ test_render_aliased_model(void) {
     assert(float_array_equal_exact(aliased.PSIl, cur.PSIl, 57));
 }
 
-/* Synthesis renders voiced harmonics 0.3 dB up and unvoiced ones 0.4 dB down,
- * shared by every codec: after the decoder fixes, DVSI's decoders play voiced
- * frames 0.32-0.38 dB louder and unvoiced frames 0.32-0.40 dB quieter than
- * this library did on identical bits. A flat voiced harmonic renders at
+/* The public synthesis renders voiced harmonics 0.3 dB up and unvoiced ones
+ * 0.4 dB down: DVSI's decoders play voiced frames 0.32-0.38 dB louder and
+ * unvoiced frames 0.32-0.40 dB quieter than TIA-102.BABA's rendering does on
+ * identical bits. A flat voiced harmonic renders at
  * 2 Ml |H| / 7 times the voiced gain; a flat unvoiced model's level, measured
  * before the gains (1.442691668 RMS for this model and seed), times the
  * unvoiced gain. */
@@ -686,137 +687,6 @@ test_render_voicing_gains(void) {
             assert(fabs(sqrt(e / (16 * 160)) / 1.442691668 - gu) < 1e-4);
         }
     }
-}
-
-/* Two frames of 18 voiced harmonics at 200 Hz and amplitude 16, rendered with
- * `voiced`; the second frame's samples, played from a previous frame whose
- * amplitudes are set to `prev_amp` (its phases kept, so every run renders the
- * same phases) at the pitch `cur_hz`. */
-static void
-voiced_step_frame(float out[160], float prev_amp, double cur_hz, enum mbe_voiced_synthesis voiced) {
-    mbe_parms cur, prev, enhanced;
-    float first[160];
-    mbe_initMbeParms(&cur, &prev, &enhanced);
-    cur.w0 = (float)(2.0 * M_PI * 200.0 / 8000.0);
-    cur.L = 18;
-    for (int l = 1; l <= cur.L; ++l) {
-        cur.Vl[l] = 1;
-        cur.Ml[l] = 16.0f;
-    }
-    prev = cur;
-    mbe_synthesizeRepeatedSpeechf(first, &cur, &prev, voiced);
-    prev = cur;
-    for (int l = 1; l <= prev.L; ++l) {
-        prev.Ml[l] = prev_amp;
-    }
-    cur.w0 = (float)(2.0 * M_PI * cur_hz / 8000.0);
-    mbe_synthesizeRepeatedSpeechf(out, &cur, &prev, voiced);
-}
-
-/* fourth_root_law_error() of output that proves nothing: finite, since a
- * fast-math build of this test may fold comparisons with infinity. */
-#define LAW_REJECTED 1e9
-
-/* Largest relative departure of step[n] / flat[n] from (1 + n / 160)^4 / 16,
- * the fourth-root law from amplitude 1 to 16 against a steady 16, over samples
- * away from zero crossings. */
-static double
-fourth_root_law_error(const float step[160], const float flat[160]) {
-    double peak = 0.0, worst = 0.0;
-    int checked = 0;
-    for (int n = 0; n < 160; ++n) {
-        /* Finite, read as a bit pattern so a fast-math build cannot fold it. */
-        uint32_t a, b;
-        memcpy(&a, &step[n], sizeof(a));
-        memcpy(&b, &flat[n], sizeof(b));
-        if ((a & 0x7FFFFFFFu) >= 0x7F800000u || (b & 0x7FFFFFFFu) >= 0x7F800000u) {
-            return LAW_REJECTED;
-        }
-        peak = fmax(peak, fabs((double)flat[n]));
-    }
-    /* A silent or non-finite steady frame proves nothing. */
-    if (!(peak > 1.0 && peak < 1e6)) {
-        return LAW_REJECTED;
-    }
-    for (int n = 0; n < 160; ++n) {
-        if (fabs((double)flat[n]) > 0.05 * peak) {
-            const double law = pow(1.0 + (double)n / 160.0, 4.0) / 16.0;
-            worst = fmax(worst, fabs((double)step[n] / (double)flat[n] - law) / law);
-            checked++;
-        }
-    }
-    return (checked >= 80) ? worst : LAW_REJECTED;
-}
-
-/* DVSI's law moves a harmonic only between two positive finite amplitudes:
- * zero, negative, infinite and NaN amplitudes (stored as bit patterns, so a
- * fast-math build cannot fold them) keep the specification's rendering. */
-static void
-test_voiced_amplitude_law_gate(void) {
-    static const uint32_t rejected[] = {0x00000000u, 0x80000000u, 0xBF800000u, 0x7F800000u,
-                                        0xFF800000u, 0x7FC00000u, 0xFFC00000u, 0x7F800001u};
-    static const uint32_t accepted[] = {0x00000001u, 0x00800000u, 0x3F800000u, 0x7F7FFFFFu};
-    const float one = 1.0f;
-    for (size_t i = 0; i < sizeof(rejected) / sizeof(rejected[0]); ++i) {
-        float x;
-        memcpy(&x, &rejected[i], sizeof(x));
-        assert(!mbe_voiced_amplitude_law_applies(&x, &one));
-        assert(!mbe_voiced_amplitude_law_applies(&one, &x));
-    }
-    for (size_t i = 0; i < sizeof(accepted) / sizeof(accepted[0]); ++i) {
-        float x;
-        memcpy(&x, &accepted[i], sizeof(x));
-        assert(mbe_voiced_amplitude_law_applies(&x, &one));
-        assert(mbe_voiced_amplitude_law_applies(&one, &x));
-    }
-}
-
-/* Whether `dvsi` is `spec` at the codec paths' voiced gain: every harmonic of
- * these frames is voiced. */
-static int
-at_dvsi_voiced_gain(const float dvsi[160], const float spec[160]) {
-    const double ratio = (double)MBE_RENDER_VOICED_GAIN_DVSI / (double)MBE_RENDER_VOICED_GAIN;
-    for (int n = 0; n < 160; ++n) {
-        if (!(fabs((double)dvsi[n] - ratio * (double)spec[n]) <= 1e-4 * (1.0 + fabs((double)dvsi[n])))) {
-            return 0;
-        }
-    }
-    return 1;
-}
-
-/* The codec paths' voiced amplitude (MBE_VOICED_SYNTHESIS_DVSI): at steady
- * pitch every harmonic, the 8th and above included, moves from one level to the
- * next with its fourth root linear over the frame, as DVSI's AMBE-3000 plays a
- * gain step (#157); the specification's rendering does not. A fade from a silent
- * model and a pitch step render as the specification's, at the codec paths'
- * voiced gain. */
-static void
-test_dvsi_voiced_amplitude(void) {
-    float flat[160], step[160];
-    /* The checker itself rejects silent and non-finite output. */
-    float level[160], nan_samples[160], silence[160] = {0};
-    for (int n = 0; n < 160; ++n) {
-        const uint32_t nan_bits = 0x7FC00000u;
-        level[n] = 16.0f;
-        memcpy(&nan_samples[n], &nan_bits, sizeof(nan_samples[n]));
-    }
-    assert(fourth_root_law_error(nan_samples, level) >= LAW_REJECTED);
-    assert(fourth_root_law_error(level, nan_samples) >= LAW_REJECTED);
-    assert(fourth_root_law_error(silence, silence) >= LAW_REJECTED);
-    voiced_step_frame(flat, 16.0f, 200.0, MBE_VOICED_SYNTHESIS_DVSI);
-    voiced_step_frame(step, 1.0f, 200.0, MBE_VOICED_SYNTHESIS_DVSI);
-    assert(fourth_root_law_error(step, flat) < 1e-4);
-    voiced_step_frame(flat, 16.0f, 200.0, MBE_VOICED_SYNTHESIS_SPEC);
-    voiced_step_frame(step, 1.0f, 200.0, MBE_VOICED_SYNTHESIS_SPEC);
-    assert(fourth_root_law_error(step, flat) > 0.1);
-
-    float dvsi[160], spec[160];
-    voiced_step_frame(dvsi, 0.0f, 200.0, MBE_VOICED_SYNTHESIS_DVSI);
-    voiced_step_frame(spec, 0.0f, 200.0, MBE_VOICED_SYNTHESIS_SPEC);
-    assert(at_dvsi_voiced_gain(dvsi, spec));
-    voiced_step_frame(dvsi, 1.0f, 230.0, MBE_VOICED_SYNTHESIS_DVSI);
-    voiced_step_frame(spec, 1.0f, 230.0, MBE_VOICED_SYNTHESIS_SPEC);
-    assert(at_dvsi_voiced_gain(dvsi, spec));
 }
 
 typedef int (*process_fn)(float*, mbe_process_result*, const char*, mbe_parms*, mbe_parms*, mbe_parms*);
@@ -1325,6 +1195,218 @@ test_ambe2400_repeat_limit_keeps_error_rate(void) {
 /**
  * @brief Test entry: IMBE and AMBE parameter derivation spot checks.
  */
+/* Whether two 160-sample frames hold the same float bit patterns. */
+static int
+same_frame_bits(const float a[160], const float b[160]) {
+    for (int n = 0; n < 160; ++n) {
+        uint32_t x, y;
+        memcpy(&x, &a[n], sizeof(x));
+        memcpy(&y, &b[n], sizeof(y));
+        if (x != y) {
+            return 0;
+        }
+    }
+    return 1;
+}
+
+/* Rate-33 voicing as DVSI's decoders render it: each voiced 500 Hz column
+ * reaches 250 Hz into an unvoiced column below it, row 17 voices column 0, and
+ * b1 15 marks a late onset. */
+static void
+test_ambe2450_vuv_rendering(void) {
+    /* Row 7 leaves column 5 (2500-3000 Hz) unvoiced and voices column 6. */
+    const float f0 = 101.0f / 8000.0f;
+    assert(mbe_ambe2450_harmonic_voiced(AmbeVuv[7], 24, f0) == 1); /* 2424 Hz, column 4 */
+    assert(mbe_ambe2450_harmonic_voiced(AmbeVuv[7], 25, f0) == 0); /* 2525 Hz */
+    assert(mbe_ambe2450_harmonic_voiced(AmbeVuv[7], 27, f0) == 0); /* 2727 Hz */
+    assert(mbe_ambe2450_harmonic_voiced(AmbeVuv[7], 28, f0) == 1); /* 2828 Hz: within 250 Hz of column 6 */
+    assert(mbe_ambe2450_harmonic_voiced(AmbeVuv[16], 1, f0) == 0);
+    assert(mbe_ambe2450_harmonic_voiced(AmbeVuv[17], 4, f0) == 1); /* 404 Hz, column 0 */
+    assert(mbe_ambe2450_harmonic_voiced(AmbeVuv[17], 5, f0) == 0); /* 505 Hz */
+    for (int row = 18; row < 32; ++row) {
+        for (int l = 1; l <= 56; ++l) {
+            assert(mbe_ambe2450_harmonic_voiced(AmbeVuv[row], l, 0.012f) == 0);
+        }
+    }
+
+    for (int b1 = 0; b1 < 32; ++b1) {
+        int b[9] = {60, b1, 20, 100, 30, 10, 5, 5, 3};
+        char ambe_d[49];
+        mbe_parms cur, prev, enhanced;
+        mbe_initMbeParms(&cur, &prev, &enhanced);
+        mbe_ambe2450_pack(b, ambe_d);
+        assert(mbe_decodeAmbe2450Parms(ambe_d, &cur, &prev) == MBE_AMBE2450_FRAME_VOICE);
+        assert(mbe_voicing_onset_delay(&cur) == ((b1 == MBE_AMBE2450_VUV_LATE_ONSET) ? MBE_VOICING_ONSET_LATE : 0));
+        int voiced = 0;
+        for (int l = 1; l <= cur.L; ++l) {
+            voiced += cur.Vl[l];
+        }
+        assert((voiced > 0) == (b1 <= 15 || b1 == 17));
+    }
+}
+
+/* Eq 116 scales an error-free frame whose amplitudes sum past 20480 down to
+ * it; the IMBE and rate-33 paths, as DVSI's decoders, leave it unscaled. */
+static void
+test_amplitude_limit(void) {
+    for (int loud = 0; loud <= 1; ++loud) {
+        mbe_parms spec, none, prev, enhanced;
+        mbe_initMbeParms(&spec, &prev, &enhanced);
+        spec.w0 = (float)(2.0 * M_PI * 150.0 / 8000.0);
+        spec.L = 24;
+        for (int l = 1; l <= spec.L; ++l) {
+            spec.Vl[l] = 1;
+            spec.Ml[l] = loud ? 1500.0f : 100.0f; /* sums 36000 or 2400 */
+        }
+        prev = spec;
+        none = spec;
+        mbe_applyAdaptiveSmoothingWithRm0Limit(&spec, &prev, 1.0e6f, MBE_AMPLITUDE_LIMIT_SPEC);
+        mbe_applyAdaptiveSmoothingWithRm0Limit(&none, &prev, 1.0e6f, MBE_AMPLITUDE_LIMIT_NONE);
+        double spec_sum = 0.0, none_sum = 0.0;
+        for (int l = 1; l <= spec.L; ++l) {
+            spec_sum += spec.Ml[l];
+            none_sum += none.Ml[l];
+        }
+        if (loud) {
+            assert(fabs(spec_sum - (double)MBE_DEFAULT_AMPLITUDE_THRESHOLD) < 1.0);
+            assert(fabs(none_sum - 36000.0) < 1.0);
+        } else {
+            assert(fabs(spec_sum - 2400.0) < 1e-3 && fabs(none_sum - 2400.0) < 1e-3);
+        }
+        assert(spec.amplitudeThreshold == none.amplitudeThreshold);
+        uint32_t spec_energy, none_energy;
+        memcpy(&spec_energy, &spec.localEnergy, sizeof(spec_energy));
+        memcpy(&none_energy, &none.localEnergy, sizeof(none_energy));
+        assert(spec_energy == none_energy);
+    }
+}
+
+/* Two frames through the IMBE path's synthesis: a voiced onset muted by the
+ * error rate, then the same model audible. `history` sets the phases and pitch
+ * before the unvoiced gap; the audible frame must not depend on it. */
+static void
+muted_onset_then_voice(float out[160], float history) {
+    mbe_parms cur, prev, enh;
+    float muted[160];
+    mbe_initMbeParms(&cur, &prev, &enh);
+    enh.w0 = (float)(2.0 * M_PI * (150.0 + 100.0 * history) / 8000.0);
+    enh.L = 20;
+    for (int l = 1; l <= 56; ++l) {
+        enh.Vl[l] = 0;
+        enh.Ml[l] = 4.0f;
+        enh.PSIl[l] = history * (float)l;
+        enh.PHIl[l] = 2.0f * history * (float)l;
+    }
+    cur = enh;
+    cur.w0 = (float)(2.0 * M_PI * 230.0 / 8000.0);
+    cur.L = 15;
+    for (int l = 1; l <= cur.L; ++l) {
+        cur.Vl[l] = 1;
+        cur.Ml[l] = 16.0f;
+    }
+    cur.errorRate = 1.0f; /* past any muting threshold */
+    mbe_parms voiced = cur;
+    mbe_synthesizeSpeechWithPreEnhRm0f(muted, &cur, &enh, 0.0f, MBE_MUTE_NOISE_SPEC, MBE_VOICED_SYNTHESIS_DVSI,
+                                       MBE_AMPLITUDE_LIMIT_NONE);
+    enh = cur;
+    voiced.errorRate = 0.0f;
+    voiced.noiseSeed = cur.noiseSeed;
+    memcpy(voiced.noiseOverlap, cur.noiseOverlap, sizeof(voiced.noiseOverlap));
+    mbe_synthesizeSpeechWithPreEnhRm0f(out, &voiced, &enh, 0.0f, MBE_MUTE_NOISE_SPEC, MBE_VOICED_SYNTHESIS_DVSI,
+                                       MBE_AMPLITUDE_LIMIT_NONE);
+}
+
+/* A muted voiced onset still starts the pulse train (the muted frame advances
+ * it), so the first audible frame plays the same whatever came before the gap. */
+static void
+test_dvsi_muted_onset(void) {
+    float a[160], b[160];
+    muted_onset_then_voice(a, 0.3f);
+    muted_onset_then_voice(b, 1.7f);
+    assert(same_frame_bits(a, b));
+}
+
+/* Without eq 116's scaling, an extreme but finite prediction history still
+ * synthesizes finite PCM (MBE_AMPLITUDE_SAFETY_LIMIT), here and after it. */
+static void
+test_amplitude_safety_limit(void) {
+    mbe_parms cur, prev, enh;
+    mbe_initMbeParms(&cur, &prev, &enh);
+    prev.gamma = 240.0f;
+    for (int l = 0; l <= 56; ++l) {
+        prev.log2Ml[l] = 0.0f;
+    }
+    int b[9] = {60, 16, 20, 100, 30, 10, 5, 5, 3};
+    char ambe_d[49];
+    mbe_ambe2450_pack(b, ambe_d);
+    for (int frame = 0; frame < 3; ++frame) {
+        float pcm[160];
+        mbe_process_result result;
+        memset(&result, 0, sizeof(result));
+        assert(mbe_processAmbe2450Dataf(pcm, &result, ambe_d, &cur, &prev, &enh) >= 0);
+        for (int n = 0; n < 160; ++n) {
+            uint32_t bits;
+            memcpy(&bits, &pcm[n], sizeof(bits));
+            assert((bits & 0x7F800000u) != 0x7F800000u);
+        }
+    }
+}
+
+/* Only rate 33 marks late onsets: D-STAR and IMBE decoding clear a mark left in
+ * a caller's state, so it cannot move their phase. */
+static void
+test_onset_mark_cleared(void) {
+    mbe_parms cur, prev, enh;
+    char ambe_d[49] = {0};
+    mbe_initMbeParms(&cur, &prev, &enh);
+    mbe_set_voicing_onset_delay(&cur, 1);
+    assert(mbe_decodeAmbe2400Parms(ambe_d, &cur, &prev) == 0);
+    assert(mbe_voicing_onset_delay(&cur) == 0);
+    char imbe_d[88] = {0};
+    mbe_initMbeParms(&cur, &prev, &enh);
+    mbe_set_voicing_onset_delay(&cur, 1);
+    assert(mbe_decodeImbe4400Parms(imbe_d, &cur, &prev) == 0);
+    assert(mbe_voicing_onset_delay(&cur) == 0);
+}
+
+/* Rate 33 through its public data path: after a voiced onset (b1 15) muted by
+ * the error rate, the first audible voiced frame starts from silence, so its
+ * pulse train starts at its own start, from that frame alone, whatever the
+ * voiced history before the unvoiced gap. */
+static void
+test_ambe2450_muted_onset(void) {
+    for (int history = 0; history < 2; ++history) {
+        mbe_parms cur, prev, enh;
+        mbe_initMbeParms(&cur, &prev, &enh);
+        char ambe_d[49];
+        float pcm[160];
+        mbe_process_result result;
+        for (int f = 0; f < 12; ++f) {
+            int b[9] = {history ? 70 : 40, (f < 8) ? 0 : 16, 20, 100, 30, 10, 5, 5, 3};
+            mbe_ambe2450_pack(b, ambe_d);
+            memset(&result, 0, sizeof(result));
+            assert(mbe_processAmbe2450Dataf(pcm, &result, ambe_d, &cur, &prev, &enh) >= 0);
+        }
+        prev.errorRate = 0.102f; /* this frame's rate 0.0969 mutes; the next, 0.0921, does not */
+        int onset[9] = {60, 15, 20, 100, 30, 10, 5, 5, 3};
+        mbe_ambe2450_pack(onset, ambe_d);
+        memset(&result, 0, sizeof(result));
+        assert(mbe_processAmbe2450Dataf(pcm, &result, ambe_d, &cur, &prev, &enh) >= 0);
+        assert((result.flags & MBE_PROCESS_FLAG_MUTE) != 0u);
+        int voiced[9] = {60, 0, 20, 100, 30, 10, 5, 5, 3};
+        mbe_ambe2450_pack(voiced, ambe_d);
+        memset(&result, 0, sizeof(result));
+        assert(mbe_processAmbe2450Dataf(pcm, &result, ambe_d, &cur, &prev, &enh) >= 0);
+        assert((result.flags & MBE_PROCESS_FLAG_MUTE) == 0u);
+        /* The pulse train started with this frame: harmonic l's phase at its
+         * end is l w0 (160 - MBE_PULSE_PEAK), to whole turns. */
+        for (int l = 1; l <= 3; ++l) {
+            const double expect = (double)enh.w0 * (double)(l * (160 - MBE_PULSE_PEAK));
+            assert(fabs(wrap_angle((double)enh.PSIl[l] - expect)) < 1e-3);
+        }
+    }
+}
+
 int
 main(void) {
     test_ambe2450_layout();
@@ -1341,8 +1423,12 @@ main(void) {
     test_low_band_rendering();
     test_low_band_phase_rendering();
     test_render_voicing_gains();
-    test_dvsi_voiced_amplitude();
-    test_voiced_amplitude_law_gate();
+    test_ambe2450_vuv_rendering();
+    test_amplitude_limit();
+    test_dvsi_muted_onset();
+    test_ambe2450_muted_onset();
+    test_amplitude_safety_limit();
+    test_onset_mark_cleared();
     test_render_aliased_model();
     test_low_band_edge_cases();
     test_harmonic_phase_filter();
@@ -1419,8 +1505,9 @@ main(void) {
         }
     }
 
-    // AMBE 2450 silence frames (TIA-102.BABA-1 4.1 eqs 1-3): both b0 124 and
-    // 125 use w0 = 2*pi/32, L = 14, all bands unvoiced.
+    // AMBE 2450 silence frames: both b0 124 and 125 use w0 = 2*pi/32 and all
+    // bands unvoiced (TIA-102.BABA-1 4.1 eqs 1-3) on 15 bands, as DVSI's
+    // decoder plays them (4.1 eq 2 gives 14).
     {
         char ambe_d[49];
         mbe_parms cur = {0}, prev = {0};
@@ -1433,7 +1520,7 @@ main(void) {
             set_ambe2450_b0(ambe_d, b0);
             assert(mbe_classifyAmbe2450Frame(ambe_d) == MBE_AMBE2450_FRAME_SILENCE);
             assert(mbe_decodeAmbe2450Parms(ambe_d, &cur, &prev) == MBE_AMBE2450_FRAME_VOICE);
-            assert(cur.L == 14);
+            assert(cur.L == 15);
             assert(approx_equal(cur.w0, w0_silence, 1e-6f));
             assert((float)cur.L * cur.w0 < (float)M_PI);
             for (int l = 1; l <= cur.L; ++l) {
@@ -2248,9 +2335,15 @@ main(void) {
         prev.errorRate = 1.0f;
         cur.repeatCount = 0;
 
-        float noise_seed_before = prev_enh.noiseSeed;
+        assert(prev_enh.noiseSeed < 0.0f);
         assert(mbe_processImbe4400Dataf(out, &result, imbe_d, &cur, &prev, &prev_enh) >= 0);
-        assert(float_bits_equal(prev_enh.noiseSeed, noise_seed_before));
+        /* Muted: no unvoiced noise is drawn, and the generator moves one
+         * frame on from a fresh stream's start, as DVSI's does through a mute. */
+        assert((result.flags & MBE_PROCESS_FLAG_MUTE) != 0u);
+        assert(float_bits_equal(prev_enh.noiseSeed, (float)mbe_dvsi_noise_skip(0u, 160)));
+        for (int n = 0; n < 256; ++n) {
+            assert(prev_enh.previousUw[n] == 0.0f);
+        }
     }
 
     return 0;

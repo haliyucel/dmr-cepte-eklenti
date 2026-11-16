@@ -70,7 +70,7 @@ CI and local quality tools are tracked through:
 Hashed Python requirements are used where Python tooling is installed in CI.
 GitHub Actions are pinned to immutable commit SHAs by policy.
 
-Semgrep 1.182.1 pins two vulnerable dependency ranges:
+Semgrep 1.184.0 pins two vulnerable dependency ranges:
 
 - `mcp==1.29.0`, which is affected by
   [GHSA-84m7-p3x7-pcfv](https://github.com/modelcontextprotocol/python-sdk/security/advisories/GHSA-84m7-p3x7-pcfv).
@@ -78,7 +78,7 @@ Semgrep 1.182.1 pins two vulnerable dependency ranges:
 - `opentelemetry-*~=1.37.0` and `~=0.58b0`, which hold `opentelemetry-api` below
   the fix for [GHSA-xcq7-p3pf-p88h](https://github.com/advisories/GHSA-xcq7-p3pf-p88h).
   The Semgrep requirements override the OpenTelemetry packages Semgrep names
-  with 1.45.1 and 0.66b1, so the family stays in step.
+  with 1.45.2 and 0.66b2, so the family stays in step.
 
 Regenerate the complete hashed lockfile with the command in its header, including
 `--override .github/requirements/semgrep.in`. Install it with
@@ -176,6 +176,39 @@ exports are unchanged. A generated AUR recipe built with the local override
 and disconnected mode, and both release/VCS recipes generated the expected
 `.SRCINFO` with makepkg. Windows, macOS and ARM execution remains covered by
 the existing CI matrix and was not run on this Linux x86 host.
+
+### PFFFT update to b7ed3cd
+
+The update from `80b9c01` to `b7ed3cd` changes no output. The fork's two new
+pass-schedule switches (`src/pffft_pass_config.h`, read by
+`src/pffft_passes_impl.h`) are on by default in SIMD builds. The terminal
+radix-8 pass replaces a plan's radix-2 pass and its last radix-4 pass. The
+real 256- and 512-point transforms this project runs factor as radix-4 passes
+alone on the 4-lane backends (and the scalar build keeps the switch off), so
+their plans do not change. The in-place first pass changes only complex
+transforms, which this project does not run. The forward and backward
+transforms of both sizes gave byte-identical results under both pins in
+scalar, SSE2 and `-march=x86-64-v3` builds, and every golden hash (scalar,
+SSE2, AVX2) is unchanged. The other compiled files change only to carry the
+switches (`pffft_priv_impl.h`, `pffft_wide_impl.h`) or to move the SSE target
+test, under the same condition, from `simd/pf_sse1_float.h` into
+`simd/pf_fma_x86.h`; their notices are unchanged. The rest of the fork's
+changes touch its CMake, CI, benchmarks, tests, documentation and
+`src/pf_mixer.cpp`, which this project does not build.
+`src/pffft_pass_config.h` (BSD-3-Clause) joined the
+compiled-source notices, and the retained PFFFT text and its inventory hash
+were refreshed. Both pins were regenerated from the immutable archive.
+
+### PFFFT update to 80b9c01
+
+The update from `316f0b0` to `80b9c01` changes no output: none of the files
+this project compiles (`src/pffft.c`, `src/pffft_common.c` and the headers they
+include) changed. The fork's commits in between touch its CMake option and
+architecture detection, its CI, bench and test build files, its README and
+AGENTS notes, and `src/pffft_double.c`, which this project does not build. Its
+LICENSE and the compiled files' notices are unchanged, so only the pinned
+revision in the retained PFFFT text and its inventory hash were refreshed. Both
+pins were regenerated from the immutable archive.
 
 ### PFFFT update to 316f0b0
 

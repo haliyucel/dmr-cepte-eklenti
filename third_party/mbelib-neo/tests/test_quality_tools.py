@@ -166,6 +166,46 @@ def verify(evaluator, reframer, root):
     run(reframer, "--codec", "ambe2400", "--from-dvsi", vector, "--out", reframed, success=False)
 
 
+def verify_waveform(evaluator, root):
+    """waveform_corr: 1 for identical or scaled waveforms, found across a shift of up to 32 samples from the
+    lag used and not beyond it, and absent without speech."""
+    reference = root / "wave_ref.raw"
+    decoded = root / "wave_dec.raw"
+    report = root / "wave.json"
+    state, samples = 12345, []
+    for i in range(160 * 60):
+        state = (1103515245 * state + 12345) % (1 << 31)
+        samples.append(int(((state >> 8) % 8001 - 4000) * (0.5 + (i // 1600) % 3 * 0.25)))
+    write_pcm(reference, samples)
+
+    def measure(decoded_samples, *lag):
+        write_pcm(decoded, decoded_samples)
+        run(evaluator, "--decoded", decoded, "--ref", reference, "--json", report, *lag)
+        return json.loads(report.read_text())
+
+    for lag in (0, 80, -80):
+        metrics = measure([0] * lag + samples if lag >= 0 else samples[-lag:])
+        assert metrics["waveform_corr"] > 0.999 and metrics["waveform_shift_samples"] == 0, metrics
+        # Sample against sample is only measured near the lag used: the files here are 80 apart.
+        unshifted = metrics["waveform_corr_unshifted"]
+        assert (unshifted > 0.999) if lag == 0 else (unshifted is None), metrics
+    metrics = measure([v // 2 for v in samples])
+    assert metrics["waveform_corr"] > 0.999 and metrics["waveform_corr_unshifted"] > 0.999, metrics
+    for shift in (5, 32):
+        metrics = measure([0] * shift + samples[:-shift], "--lag-samples", 0)
+        assert metrics["waveform_corr"] > 0.99 and metrics["waveform_shift_samples"] == shift, metrics
+        # No search: a decoder whose output sits a few samples off does not correlate.
+        assert abs(metrics["waveform_corr_unshifted"]) < 0.1, metrics
+    # The lag used is undone, so a forced lag does not hide the offset either.
+    metrics = measure([0] * 8 + samples[:-8], "--lag-samples", 8)
+    assert metrics["waveform_corr"] > 0.99 and abs(metrics["waveform_corr_unshifted"]) < 0.1, metrics
+    metrics = measure([0] * 40 + samples[:-40], "--lag-samples", 0)
+    assert abs(metrics["waveform_corr"]) < 0.1, metrics
+    write_pcm(reference, [0] * 640)
+    metrics = measure([0] * 640)
+    assert metrics["waveform_corr"] is None, metrics
+
+
 def verify_soft_decode(evaluator, reframer, root):
     """Fully confident soft values decode as their hard decisions; --soft is explicit."""
     hard = root / "dam_e1_hd.bit"
@@ -200,6 +240,51 @@ def verify_soft_decode(evaluator, reframer, root):
     assert b"--soft" in result.stderr
 
 
+def verify_int16_entry_points(evaluator, reframer, root):
+    """The decoded PCM is what the codec's own int16 entry points return: the AMBE
+    paths' mute noise, under one 16-bit step in the float output, rounds to 0 on
+    about two thirds of the samples and +-1 on the rest (truncating the float
+    output would leave the muted frames silent)."""
+    for codec in ("ambe2400", "ambe2450"):
+        parameters, frames = root / f"{codec}_bits.txt", root / f"{codec}_frames.txt"
+        wav, params = root / f"{codec}.wav", root / f"{codec}.jsonl"
+        state, rows = 0x2400C3C3, []
+        for _ in range(160):
+            bits = []
+            for _ in range(49):
+                state ^= (state << 13) & 0xFFFFFFFF
+                state ^= state >> 17
+                state ^= (state << 5) & 0xFFFFFFFF
+                bits.append(state & 1)
+            bits[0] = 0  # b0 below 64: voice
+            rows.append("".join(map(str, bits)))
+        parameters.write_text("".join(row + "\n" for row in rows))
+        run(reframer, "--codec", codec, "--in", parameters, "--out", frames)
+        damaged = []
+        for row in frames.read_text().splitlines():
+            cells = list(row)
+            # Three corrected C0 data bits and three corrected C1 bits a frame:
+            # enough for the error level (D-STAR) or rate (rate 33) to mute.
+            for k in (12, 13, 14, 35, 36, 37):
+                cells[k] = "1" if cells[k] == "0" else "0"
+            damaged.append("".join(cells))
+        frames.write_text("".join(row + "\n" for row in damaged))
+        run(evaluator, "--codec", codec, "--frames", frames, "--out", wav, "--params", params)
+        data = wav.read_bytes()[44:]
+        samples = struct.unpack(f"<{len(data) // 2}h", data)
+        records = [json.loads(line) for line in params.read_text().splitlines()]
+        assert len(samples) == 160 * len(records) == 160 * 160
+        assert all(record["errors"] == 6 for record in records), records[-1]
+        muted = [record["f"] for record in records if record["flags"] & 0x80]
+        assert len(muted) > 30, (codec, len(muted))
+        # The first muted frame of a run may fade the last frame out over its
+        # first 80 samples; its second half is the noise alone.
+        noise = [samples[160 * f + i] for f in muted for i in range(0 if f - 1 in muted else 80, 160)]
+        assert set(noise) <= {-1, 0, 1}, (codec, sorted(set(noise)))
+        nonzero = sum(1 for v in noise if v) / len(noise)
+        assert 0.27 < nonzero < 0.40, (codec, nonzero)
+
+
 def verify_dvsi_selection():
     """The fetcher takes every supported mode, its no-FEC variant and the transcodes between them."""
     path = Path(__file__).resolve().parents[1] / "tools" / "quality" / "fetch_dvsi_vectors.py"
@@ -230,5 +315,7 @@ if __name__ == "__main__":
         old_mask = os.umask(0)
         try:
             verify(sys.argv[1], sys.argv[2], Path(directory))
+            verify_waveform(sys.argv[1], Path(directory))
+            verify_int16_entry_points(sys.argv[1], sys.argv[2], Path(directory))
         finally:
             os.umask(old_mask)

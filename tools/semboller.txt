@@ -1,0 +1,10 @@
+_ZN13VocoderPlugin16decode_2400x1200EPsPh
+_ZN13VocoderPlugin16decode_2450x1150EPsPh
+_ZN13VocoderPlugin16encode_2400x1200EPsPh
+_ZN13VocoderPlugin16encode_2450x1150EPsPh
+create
+destroy
+dmrcepte_imbe_decode_4400
+dmrcepte_imbe_encode_4400
+eklenti_kimligi
+eklenti_mbelib_surumu

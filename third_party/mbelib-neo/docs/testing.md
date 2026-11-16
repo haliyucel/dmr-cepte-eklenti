@@ -17,11 +17,18 @@ The CTest suite includes:
 - MBE speech analysis numerics: Kaiser windows, the window transform, harmonic fits and magnitudes of off-grid harmonics, noise statistics without magnitude ripple, the FFT autocorrelation against the direct sum, and the voicing thresholds (`test_speech_analysis`)
 - Encoder context, FFT and autocorrelation plan allocation failures (each of the eleven, for the D-STAR, AMBE+2 and IMBE encoders) clean up fully; after successful allocation, encoding (tone frames included) and reset allocate nothing (`test_ambe2400_encoder_oom`, `test_ambe2450_encoder_oom`, `test_imbe7200_encoder_oom`, GNU link wrapping when LTO is disabled)
 - noise determinism and frame-state determinism checks
-- parameter and synthesis behavior checks, including an `L * w0 < pi` bound for every model the decoders emit, and the codec paths' voiced amplitude (every harmonic at steady pitch, the 8th and above included, following the fourth-root law against a steady frame, fades from a silent model and pitch steps rendered as the specification's at the codec paths' voiced gain)
-- AMBE 3600x2450 frame-type handling per TIA-102.BABA-1: frame classification, silence history freeze, repeats, erasures, tones (including unverified tone frames), muting, and recovery after mutes and tones (`test_ambe2450_frame_types`)
+- parameter and synthesis behavior checks, including an `L * w0 < pi` bound for every model the decoders emit
+- the codec paths' unvoiced synthesis: DVSI's noise generator (its period, its first samples, a cold start and a skipped frame), a subframe against the equations it implements, the window's squares summing to one, a level step inside a frame, the public `mbe_synthesizeSpeechf()` keeping the specification's rendering, a state handed from one rendering to the other, invalid arguments and models, and two streams replaying alike (`test_unvoiced_subframes`)
+- the codec paths' voiced synthesis in subframes: a steady model adding up to its harmonics, an onset starting the pulse train, a late onset, a pitch step keeping the train, the mid-frame model against an independent evaluation, linear crossfades into and out of silence, a muted frame moving the train on, stored pulse state that is not a frame's own being dropped, invalid models (harmonic counts, pitches and magnitudes of any value) leaving the neighbouring state alone, and the frame marks the decoders set: every P25 and D-STAR pitch code of an unvoiced frame, P25 voicing that stays under 505 Hz, the previous voicing lasting to mid-frame through the P25 data path, and the previous model held to mid-frame by a rate-33 silence frame; a frame that starts from silence: the independent rendering of the waveform test through such frames, a steady voiced pair rising as n / 80 of the ordinary rendering from an empty train, stale pulses, phases and overlap neither sounding nor moving the new train, a silence frame rising to its own model, and advancing leaving the state rendering leaves (`test_subframe_synthesis`)
+- AMBE 3600x2450 frame-type handling per TIA-102.BABA-1 and as DVSI's decoder plays it: frame classification, silence history freeze, silence frames on 15 bands at their level with the previous model held to mid-frame, repeats, erasures (tone ID 255 among them, on the hard, soft and parameter-bit paths, and the all-ones frame of DVSI's DTX vectors, a tone frame with the unusable index 180), tones (including unverified tone frames), muting (the mute noise level, the last frame fading out against an independent rendering, the model kept and the noise generator's single frame through every kind of mute), the frame after a mute or a tone rendered from silence from the kept model (plus a tone's tail), and lost frames repeating a tone bit for bit until the repeat limit fades it out (`test_ambe2450_frame_types`)
 - D-STAR voicing: every b1 value at four pitches, each voiced band reaching 250 Hz into the band below (`test_ambe2400_frame_types`)
 - D-STAR frame classes outside plain voice: b0 125, tone frames without a tone and b0 127 frames repeating like error repeats through the hard, soft and parameter-bit APIs and sharing the repeat limit, the null frame and b0 120..124 as voice (b0 124 with the AMBE+2 silence model, all 16 b1 values playing alike on every API and committed to the prediction history), zero-volume tones, C0 words with four errors (every pattern of weight 4 and none lighter, hard and soft) playing as lost frames whose decode the next frame predicts from, through a lost frame or a tone after them, corrections repeating no frame and tones with corrections playing, lost frames after a single tone (the tail fading out, then silence) and after a dual tone (the tone going on until the repeat limit), tones muted with the error level, the repeat-limit mute (fade-out, DVSI-level noise, prediction kept), the voice after it starting from the prediction history (that frame alone changing; a held or initial history fading in from silence; a b0 124 or still-muted frame after it) and the error-level mute and its noise level, and the all-ones DV frame as a lost frame for runs of 1, 3 and 20, the 80-sample crossfades into and out of a tone against a stream with a lost frame in its place, and a tone's volume step ramping over 80 samples before the clip while a new index starts at once (`test_ambe2400_frame_types`)
-- float-to-int16 conversion parity checks
+- float-to-int16 conversion parity checks, and the D-STAR and rate-33 paths' round-to-nearest conversion
+  in every compiled variant against `roundf()` (exact halves and the floats beside them, the limit,
+  infinities, NaN, subnormals and a sweep over float bit patterns, in every lane and at unaligned
+  addresses), with `mbe_floattoshort()` still truncating (`test_pcm_rounding`); the AMBE `short` entry
+  points rounding their float twins' output, the IMBE ones truncating, and both AMBE paths' muted
+  16-bit noise (`test_frame_paths`)
 - golden PCM hash regression checks, by kernel ISA: `test_golden_pcm` runs the CPU probe's choice,
   `test_golden_pcm_sse2` and `test_golden_pcm_avx2` force either copy of a run-time AVX2 dispatch build
   and skip (exit 77) where the build or CPU cannot run it; `MBELIB_TEST_REQUIRE_AVX2=ON` makes the AVX2
@@ -321,6 +328,12 @@ on AVX2), preserving the original sample order and stream state exactly.
 recurrence across three consecutive frames, including the overlap and next
 seed. This oracle also runs on ARM32 and AArch64 under QEMU.
 
+These kernels now serve the public `mbe_synthesizeSpeechf()`. The codec paths
+render in subframes ([DVSI parity](dvsi-parity.md#synthesis-in-subframes)) with
+scalar loops: DVSI's 16-bit noise generator one sample at a time, and each
+pitch pulse's harmonics by rotation. They share the transform, the phase
+regeneration and the PCM conversion with the specification's rendering.
+
 On AVX2 compile targets, float kernels process eight lanes, including voiced
 oscillators, unvoiced windowing/overlap and PCM conversion. Portable x86-64
 builds still require only SSE2; their voiced oscillators, tone fits, soft ECC
@@ -510,6 +523,24 @@ Gitleaks history and worktree-diff scans are also clean; the history scan
 mounts the worktree's common Git directory as well as the worktree.
 DVSI inputs, audio, comparison reports and benchmark logs stay local.
 
+### Subframe synthesis
+
+The codec paths' synthesis in 10 ms subframes ([DVSI parity](dvsi-parity.md#synthesis-in-subframes))
+renders each pitch pulse's harmonics by rotation in scalar code, where the rendering it replaces
+there used the vector oscillator kernels. Measured as above (Ryzen 9
+5950X, GCC 16.2.1, Release with fast-math and LTO on both sides, `bench_replay hard <codec> 10 5`
+on DVSI's `dam` stream, the median of five alternating comparisons pinned to CPU 6), against main
+at `8875729`. Portable is `MBELIB_ENABLE_NATIVE=OFF`, whose AVX2 kernel copies run on this CPU.
+
+| Complete frame decode | Build | Before | After | Time added |
+| --- | --- | ---: | ---: | ---: |
+| D-STAR, hard | portable | 4.807 us | 5.814 us | 20.9% |
+| AMBE+2, hard | portable | 5.174 us | 6.388 us | 23.5% |
+| IMBE, hard | portable | 5.117 us | 6.140 us | 20.0% |
+| D-STAR, hard | host-tuned | 4.363 us | 5.108 us | 17.1% |
+| AMBE+2, hard | host-tuned | 4.662 us | 5.599 us | 20.1% |
+| IMBE, hard | host-tuned | 4.623 us | 5.463 us | 18.2% |
+
 ## TETRA Conformance
 
 EN 300 395-4 tests a TETRA speech decoder bit for bit: TE1_46.CHD (138 little-endian 16-bit
@@ -680,6 +711,16 @@ hard links and normalized not-yet-created output paths), or fewer than 256
 aligned samples fail with exit 2 **before output creation**. A negative codec
 status or nonfinite float PCM exits 3 with the frame index.
 
+The 16-bit PCM written and measured comes from the codec's own public `short`
+entry points, run over the same rows from a second, separately initialized and
+seeded state after the float pass, so it is what a caller of those entry points
+gets (the D-STAR and AMBE 3600x2450 ones round to nearest, the IMBE ones
+truncate; [DVSI parity](dvsi-parity.md#16-bit-output)). The float pass keeps
+supplying the statistics, the float diagnostics below and the `--params` dump.
+The two passes must agree on every frame's status, flags, error counts and
+parameter bits, or the tool exits 3. Up to 2.6.8 the tool converted the float
+output with `mbe_floattoshort()`.
+
 Schema-2 metrics preserve the original supported formulas:
 
 - `lag_samples` is the lag actually used. Optional `--lag-samples` accepts
@@ -706,6 +747,19 @@ Schema-2 metrics preserve the original supported formulas:
   `lsd_db` is mean active-frame log-spectral distance: symmetric 256-point Hann,
   80-sample hop, bins 2…118, reference-derived power floor
   `max(1e-6 * max(reference power), 1e-20)`.
+- `waveform_corr` is the normalized correlation of the two waveforms over the
+  active frames, the best within 32 samples either side of the lag used
+  (`waveform_shift_samples`), since that lag comes from envelopes at 8-sample
+  hops and can land 16 samples from the waveforms' common timing. The other
+  metrics see relative harmonic phase only indirectly (crest factor,
+  short-window envelopes and spectra); this one sees the waveform itself, so two
+  decoders with equal spectra and unrelated pulse positions score near 0, while
+  a pulse train shifted by up to 32 samples as a whole still scores high.
+  `waveform_corr_unshifted` is the same correlation with the two files sample
+  against sample (the lag undone, no search), reported when the lag used is
+  within 32 samples. Two decoders of the same bits share their timing, so
+  between them a sample of delay, or a noise sequence one sample off, shows
+  here and not in `waveform_corr`.
 - `env_corr` correlates log 40-sample RMS envelopes, floored 60 dB below each
   maximum. `crest_ref_db`, `crest_dec_db`, and `crest_delta_db` are mean 20-ms
   peak/RMS values and decoded-minus-reference difference. `band_delta_db_*`
@@ -900,8 +954,8 @@ $SB --tools build/tools-debug --out $Q/candidate --lags-from $JOINT \
 ```
 
 - **Speech:** ours vs the input, DVSI's decoder vs the input, and ours vs
-  DVSI's decoder, with the `mbe_quality_eval` metrics above (absolute level and
-  RMS-matched spectra).
+  DVSI's decoder, with the `mbe_quality_eval` metrics above (absolute level,
+  RMS-matched spectra and, against DVSI's decoder, `waveform_corr`).
 - **Pitch:** a harmonic-peak f0 estimator measures our output, DVSI's output
   and the input on stable voiced frames and reports each against the pitch our
   decoder coded, by f0 band. A decoder that plays sharp or flat shows up as a
@@ -1003,7 +1057,9 @@ $SB --tools build/tools-debug --out $Q/candidate --lags-from $JOINT \
   vector in only one of the two runs.
   `all_no_increase` and `all_no_decrease` hold every vector to the limit, not
   just the mean, and a check's `min_coverage` fails it when its common frames
-  are too few.
+  are too few. A metric that neither run reports for a vector (as
+  `waveform_corr_unshifted` at a lag past 32 samples) leaves that vector out
+  of a check; `every_vector` fails the check instead.
 
 `mbe_quality_eval --params frames.jsonl` writes one JSON record per frame:
 `bits` (the frame's parameter bits after FEC), `decoded` (the frame's own

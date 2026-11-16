@@ -1,7 +1,0 @@
-build
-build_benches
-build_*
-.vscode
-
-__pycache__/
-*.pyc
