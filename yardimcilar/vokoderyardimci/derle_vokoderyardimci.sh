@@ -12,7 +12,7 @@
 # NEDEN lib*.so ADI: paket yoneticisi yalnizca lib*.so dosyalarini nativeLibraryDir'e
 # cikarir; Android 10+ yurutulebilir dosyayi yalnizca oradan calistirmaya izin verir.
 #
-# NEDEN arm64-v8a KLASORUNDE BIR x86_64 IKILI (2026-11-17): x86_64 emulatorler (BlueStacks)
+# NEDEN arm64-v8a KLASORUNDE BIR x86_64 IKILI (2026-11-17): x86_64 PC emulatorleri
 # APK'da x86 kitapligi olmadigi icin uygulamayi arm64 cevirisiyle kurar ve yalniz
 # lib/arm64-v8a'yi cikarir; ama ARM yurutulebilirini calistiramaz ("not executable:
 # 64-bit ELF file"). Bu kopya orada yerel calisir ve eklentinin x86_64 ikilisini acar.
