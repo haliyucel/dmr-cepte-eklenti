@@ -29,6 +29,10 @@ ve CMake (3.22.1) ile `SHA256SUMS` birebir yeniden üretilir.
 `indir` ve `uygula` adımları arşivi indirip doğrular, farkı inceleme için ayırır, kaynağı değiştirip derler.
 Ayrıntı betiğin başında.
 
+**Yardımcı programlar:** uygulamanın APK'sındaki `libmd380yardimci.so` ve `libvokoderyardimci.so`
+programlarının tam kaynağı ve derleme betikleri `yardimcilar/` altında (GPL-2.0-or-later; ikililer bit bit
+yeniden üretilir, özetler oradaki README'de).
+
 **Lisans:** GPL-2.0-or-later (`LICENSE`). mbelib-neo'nun ISC ve PFFFT bildirimleri `LICENSES/` ve
 `third_party/` altında korunur. DMR karıştırma tabloları DSD'den (ISC).
 
@@ -44,5 +48,6 @@ The vocoder plugin that the DMR Cepte app downloads separately on the device (no
 It wraps mbelib-neo 2.6.11 (official release source archive, SHA-256 above) behind the DroidStar plugin interface (see the table above)
 and adds IMBE 4400 for P25. Licensed GPL-2.0-or-later; full corresponding source of mbelib-neo and PFFFT
 is in `third_party/` (PFFFT as the archive pinned inside mbelib-neo). `derle.sh` reproduces `SHA256SUMS`
-with NDK 28.2.13676358 and CMake 3.22.1. Codecs may be covered by patents; see
+with NDK 28.2.13676358 and CMake 3.22.1. Source and build scripts of the app's helper programs (`libmd380yardimci.so`,
+`libvokoderyardimci.so`) are in `yardimcilar/` (GPL-2.0-or-later, reproducible). Codecs may be covered by patents; see
 `third_party/mbelib-neo/legal/patents.md`.
