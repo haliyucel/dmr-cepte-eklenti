@@ -1,5 +1,10 @@
 # DMR Cepte ses çözücü eklentisi
 
+> **Güncel kaynak `mbelib-neo-2.6.11` dalında:** [mbelib-neo 2.6.11 eklentisi ve uygulamadaki yardımcı programların
+> (`libmd380yardimci`, `libvokoderyardimci`) kaynakları](../../tree/mbelib-neo-2.6.11). DMR Cepte 5.16.19 ve sonrası
+> o daldaki `d85d650` commit'ini kullanır. Bu daldaki (`main`) dosyalar mbelib-neo 2.6.5'tir ve eski uygulama
+> sürümleri içindir; yeni sürüm 64 bit cihazda da denenince buraya alınacak.
+
 DMR Cepte uygulamasının, cihazda ayrıca indirdiği ses çözücü (vokoder) eklentisi. Uygulamanın APK'sının
 içinde gelmez; kullanıcı onay verince bu depodan indirilir.
 
@@ -32,6 +37,10 @@ temizliği almadığını belirtir (`third_party/mbelib-neo/legal/patents.md`). 
 ---
 
 # DMR Cepte vocoder plugin (English)
+
+> **Current source is on the `mbelib-neo-2.6.11` branch:** [the mbelib-neo 2.6.11 plugin and the source of the app's
+> helper programs](../../tree/mbelib-neo-2.6.11) (`libmd380yardimci`, `libvokoderyardimci`). DMR Cepte 5.16.19 and
+> later use commit `d85d650` on that branch. Files on `main` are mbelib-neo 2.6.5 for older app versions.
 
 The vocoder plugin that the DMR Cepte app downloads separately on the device (not bundled in the APK).
 It wraps mbelib-neo 2.6.5 (official release source archive, SHA-256 above) behind the DroidStar plugin interface (see the table above)
