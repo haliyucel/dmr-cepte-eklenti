@@ -33,9 +33,20 @@ appear here.
   as 4-bit soft decisions, show when DVSI repeats and mutes frames.
 - **Scoreboard.** `tools/quality/dvsi_scoreboard.py` measures every change on all of it
   ([DVSI scoreboard](testing.md#dvsi-scoreboard)). Its development and validation partitions
-  were examined while these changes were made, so their results are retrospective; the final
-  partition (`irstia`, `mark`) was scored only after the changes were fixed (twice; see [Scoring
-  history](#scoring-history)).
+  were examined while these changes were made, so their results are retrospective; for the
+  October 2026 changes the final partition (`irstia`, `mark`) was scored only after they were
+  fixed (twice; see [Scoring history](#scoring-history)). For the November 2026 synthesis changes
+  ([Unvoiced synthesis](#unvoiced-synthesis), [Synthesis in subframes](#synthesis-in-subframes),
+  [Voiced onsets and offsets](#voiced-onsets-and-offsets)) no partition was held out: the study
+  that found them read `irstia` and `mark` along with the others, so every figure for them is
+  retrospective. The same holds for the 2.6.9 rate-33 frame-handling and 16-bit output changes
+  ([November 2026: rate-33 frame handling](#november-2026-rate-33-frame-handling)).
+- **Hardware.** Where a contributor measured a real AMBE-3000 (a DVMEGA DVstick 30 or a ThumbDV)
+  on constructed frames, those measurements decide between rules DVSI's vectors leave open; each
+  section names the issue that carries the data. The rate-33 frame-handling sections also cite a third
+  party's published measurements of an AMBE-3000R on constructed frames, from the documents of the
+  [mbevocoder](https://github.com/srcejon/mbevocoder) project, by document and section; only those
+  published measurements are used.
 
 ## Changes
 
@@ -86,7 +97,8 @@ reliability-weighted costs reach the threshold of 342 never, and a threshold fit
 each caller sets, so neither is adopted. A muted frame is synthesized as usual (model, phase, overlap and noise
 state advance) and played as mute noise at the level of DVSI's: DVSI's muted D-STAR output is 0 on
 67% of the samples and +-1 on the rest (`dam_e10_hd`, RMS 0.60), and ours is uniform noise in
-[-1.5, 1.5] on the int16 scale, which the int16 conversion truncates to the same mix
+[-0.75, 0.75] on the int16 scale, which the 16-bit output rounds to the same mix ([16-bit
+output](#16-bit-output); until 2.6.8, noise in [-1.5, 1.5] truncated)
 (every muted frame of `dam_e10_hd` plays at RMS 0.5-0.7, where the library's comfort noise played
 56).
 
@@ -533,6 +545,358 @@ the input speech.
 P25 and D-STAR keep the data-bit counts: on DVSI's vectors full counts make P25 repeat where DVSI's
 output shows none, and make D-STAR repeat at 5% where DVSI does not.
 
+### Rate 33: V/UV vectors
+
+DVSI's rate-33 decoder voices a harmonic when its own 500 Hz column of the V/UV vector (Annex B, eq
+5) is voiced or when the column 250 Hz above it is: each voiced column reaches half a column
+(250 Hz) into an unvoiced one below it, as D-STAR's 1 kHz bands reach 250 Hz into theirs ([D-STAR voicing bands](#d-star-voicing-bands)).
+It also reads row 17 with its lowest column voiced, where Annex B lists rows 17 to 31 all
+unvoiced like row 16. The decoder, and the encoder's eqs 4 and 8, now read the voicing that way;
+the encoder still searches rows 0 to 16 (clause 4.2), so row 17 only changes how DVSI's bits play.
+On DVSI's speech vectors our decode of frames coded 17 comes 0.5 dB of log-spectral distance closer
+to DVSI's (27 frames), and of voiced frames generally 0.03 dB.
+
+Rows 1, 3, 13, 15 and 17 play some columns neither voiced nor unvoiced on DVSI's decoder (see
+[Known differences](#known-differences)); voiced is the nearer binary value for each (log-spectral
+distance against DVSI's decode on frames coded 13 or 15: 6.87 dB voiced, 7.56 dB unvoiced), so the
+table keeps Annex B's voiced columns there.
+
+### Rate 33 tone transitions
+
+DVSI's rate-33 decoder joins a tone to the frames around it over 80 samples, as its D-STAR decoder
+does ([D-STAR tone transitions](#d-star-tone-transitions)); TIA-102.BABA-1 says nothing on it. The
+tone fades in linearly over the first 80 samples of its first frame while the last frame's speech,
+played once more, fades out; and it goes on from its phases through the first 80 samples of the
+frame after its last, fading out on top of that frame, which rises from silence over the same
+samples ([Rate 33 frames after a mute or a tone](#rate-33-frames-after-a-mute-or-a-tone)). A tone
+that changes while it sounds changes at once. The library cut the tone in and out at the frame
+edges.
+
+When the crossfades came in (2.6.8), over DVSI's 52 tone vectors, in 20-sample blocks relative to
+the tone's level, DVSI's medians were 0.15, 0.37, 0.63, 0.87 going in (1102 starts) and 0.90, 0.65,
+0.39, 0.16 going out (1099 ends), and ours 0.14, 0.38, 0.63, 0.88 and 0.89, 0.65, 0.40, 0.15. Frame
+for frame, the level of a tone's first frame came from 1.83 to 0.14 dB of DVSI's and that of the
+frame after a tone from 22.1 to 0.58 dB; where a tone starts on loud speech the first 40 samples
+came from 9.7 to 0.9 dB (123 frames). Since the frame after a tone starts from silence, the voice
+frames right after a tone lie 0.37 dB from DVSI's level, and a tone's first frame is unchanged
+([Rate 33 frames after a mute or a tone](#rate-33-frames-after-a-mute-or-a-tone)). Declared gate
+that failed then (`ambe2450-tone-fade-tones`): on `dtmfvbad` the tone detector agrees with DVSI's
+output on 98.96% of its windows, from 99.93%, while the frames of that vector with a 40-sample block
+more than 6 dB from DVSI's fall from 459 to 256; the other 51 vectors keep their agreement, and no
+speech vector changes. With the rate-33 frame-handling changes of 2.6.9, `dtmfvbad` agrees on
+99.45% of its windows.
+
+The tone a frame leaves sounding, its ID and AD, is kept in the otherwise unused element 0 of `Vl`
+of `prev_mp_enhanced`, with the request that the next frame synthesized start from silence;
+`prev_mp_enhanced` itself keeps the last speech model before the tone. A mute while a tone sounds
+fades the tone out over 80 samples under the mute noise ([Rate 33 mutes](#rate-33-mutes)), lost
+frames repeat the tone ([Rate 33 lost frames and tones](#rate-33-lost-frames-and-tones)), and a
+tone after a mute fades in from silence.
+
+### Rate 33 silence frames
+
+TIA-102.BABA-1 4.1 decodes a silence frame (b0 124 or 125; the encoder sends 124) at
+w0 = 2 pi / 32 with L = 14 and every band unvoiced, and the opening of 4.3 decodes its spectral
+amplitudes as a voice frame's. It says nothing on how the frame joins the one before. This library
+decoded it so and rendered it as any frame with no voiced band: the mid-frame model between the two
+frames' (their log-mean magnitudes, the silence frame's voicing), so the voicing of the frame before
+ended where the silence frame started.
+
+DVSI's decoder plays the frame on 15 bands at that pitch, its amplitudes a further factor 0.2046
+(13.8 dB) below the voice-frame law, predicted from the last voice frame without advancing the
+prediction state. The published AMBE-3000R measurements ([Method](#method)) show this
+(mbevocoder's `docs/frontend.md`, "VAD and DTX", with a standard deviation of 0.4 dB over 18
+combinations of preceding frame and shape codes; `docs/decoder-quality.md`, "Silence frames").
+DVSI's rate-33 DTX vectors show how the frame joins the one before: DVSI's decode of them is matched
+best when the previous frame's whole model (pitch, harmonic count, voicing, amplitudes, phases)
+plays on through the silence frame's first 10 ms and the second 10 ms crossfade to the silence
+model.
+
+The library now plays it so:
+
+- Both silence codes decode on 15 bands (`MBE_AMBE2450_SILENCE_L`); b0 125, which DVSI's encoder
+  does not send and none of DVSI's vectors holds, is given the same model. The residual is
+  reconstructed on 15 bands and predicted from the history at 15 bands' taps by the voice frame's
+  law; the factor 0.2046 scales `Ml` alone, and a silence frame still never becomes the prediction
+  history. `mbe_decodeAmbe2450Parms()` returns that model.
+- The decoder marks a silence frame (`MBE_FRAME_MARK_PREVIOUS_HELD`, in element 0 of `PHIl` like the
+  marks of [Voiced onsets and offsets](#voiced-onsets-and-offsets)). The subframe synthesis then
+  takes the previous frame's own model, unchanged, as the mid-frame model, and lets the pulse train
+  run on from it, so a voiced frame right after one silence frame continues the train and one
+  after two starts it afresh.
+- D-STAR's b0 124 keeps 14 bands ([D-STAR b0 124](#d-star-b0-124)).
+
+The three DTX vectors (`clean_dtx`, `dam_dtx`, `noisy_dtx`) hold 321 silence frames, each the first
+frame of a pause. The pause's other frames are the all-ones frames DVSI's host software writes for
+the frames its DTX simulation does not send ([D-STAR lost frames](#d-star-lost-frames); in rate 33
+the all-ones frame decodes, after error correction, to a tone frame with index 180, which carries no
+tone, so it is a lost frame, as it was before these changes). DVSI's `_dtx` decodes play comfort noise
+through them, at the host software's request, where this library plays lost frames ([Rate 33 lost
+frames and tones](#rate-33-lost-frames-and-tones)), so only the silence frames themselves are
+compared. Our decode against DVSI's decode of the same bits:
+
+| Silence frames | Main | Now |
+|---|---|---|
+| Frame correlation, median, after a voiced frame (53) | 0.631 | 0.979 |
+| Frame correlation, median, after a frame with no voiced band (84) | 0.852 | 0.994 |
+| Second half's level against DVSI's, median, after a voiced frame | +7.15 dB | +0.05 dB |
+| Second half's level against DVSI's, median, after a frame with no voiced band | +9.20 dB | +0.21 dB |
+| `noisy_dtx`, 750-2500 Hz, per 50 Hz bin around the frame's end, mean (range) | +12.75 dB (+9.9 to +14.2) | +0.60 dB (-0.13 to +1.21) |
+
+Per 250 Hz band (centred on 250, 500, ... 3750 Hz), the second half of 318 silence frames lay
+-1.0, -2.5, +6.9, +10.1, +9.6, +8.9, +9.9, +8.8, +7.5, +7.5, +7.0, +3.6, -2.5, -7.8 and -5.9 dB
+from DVSI's, and lies -0.6, -0.8, +0.4, +0.9, +1.0, +0.4, +0.5, +0.5, +0.3, -0.0, -0.2, -0.2, -0.5,
+-0.8 and -0.6 dB from it now.
+
+The mid-frame rule was chosen on these vectors (correlations after a voiced and after an unvoiced
+frame): the level and band count alone, with the ordinary mid-frame model, 0.747 and 0.958; the
+voicing before lasting to mid-frame, as for `MBE_FRAME_MARK_PITCH_ABSENT`, 0.867 and 0.958; the
+previous frame's whole model at mid-frame 0.979 and 0.994 (0.964 after a voiced frame with P25's
+505 Hz condition added).
+
+DVSI's vectors do not settle the band count: a single silence frame's second half still plays
+mostly the model before it, and a 14-band build differs from the 15-band one by 0.4 dB in the top
+band on these frames. The 15 bands rest on the AMBE-3000R measurements. None of DVSI's 27 speech
+vectors, 52 tone vectors or channel vectors up to 4.9% bit errors holds a silence frame, and their
+rate-33 decodes are byte-identical before and after this change; bit errors make some in
+`dam_e10_hd` and `dam_e10_sd`. A run of consecutive silence frames is not verified (DVSI's vectors
+hold none), and a silence frame right after a mute or a tone is in [Rate 33 frames after a mute or
+a tone](#rate-33-frames-after-a-mute-or-a-tone).
+
+### Rate 33 mutes
+
+TIA-102.BABA-1 5.7 mutes a frame when the error rate is above 0.096, or in place of the 4th
+consecutive repeat. Its recommended method computes the repeat's update equations, bypasses the
+synthesis and sets the output to noise uniform over [-5, 5]; it says nothing on how a mute begins
+or ends. This library did that, and also zeroed the amplitudes of the last synthesized frame, so
+the frames after a mute faded in from nothing.
+
+DVSI's decoder plays its muted frames quieter. On `dam_e10_hd` (`dam` at 10.6% bit errors, hard
+decisions), over the 185 frames inside muted runs that both decoders mute, DVSI's output has a
+median RMS of 0.59 on the 16-bit scale: 0 on 58.6% of the samples, +-1 on 18.4% and 18.5%, +-2 on
+2.0% each. Main's played 2.46, spread evenly over -4..+4 (0 on 20.4%). And the first muted frame
+after one that was heard plays the last frame once more, fading out over its first 80 samples. At
+the 13 mute onsets that fall on the same frame in both decodes, the level per 20-sample block over
+the previous frame's RMS (medians):
+
+| Decoder | Blocks 1-8 of the muted frame |
+|---|---|
+| DVSI | 0.73 0.61 0.31 0.13 0.01 0.00 0.00 0.00 |
+| Main | 0.00 in every block |
+| Now | 0.84 0.58 0.24 0.12 0.00 0.00 0.00 0.00 |
+
+The AMBE-3000R measurements agree: of four lost frames in a row, the fourth fades
+(mbevocoder's `docs/decoder-quality.md`, "AMBE+2 erasures and unusable tone frames").
+
+The library now plays a mute as DVSI's decoder does:
+
+- **The noise** is D-STAR's, uniform in [-0.75, 0.75] on the 16-bit scale for both AMBE paths
+  (`MBE_AMBE_MUTE_NOISE_AMPLITUDE`), which their 16-bit output rounds to 0 on two thirds of the
+  samples and +-1 on the rest ([16-bit output](#16-bit-output)). Ours now: median RMS 0.58, 0 on
+  66.5% of the samples, +-1 on 16.7% and 16.8%. P25 keeps [-5, 5].
+- **The fade.** The first muted frame after a heard one plays a repeat of the last synthesized frame
+  toward a silent copy of itself, as D-STAR's repeat limit does ([D-STAR lost
+  frames](#d-star-lost-frames)), so the subframe synthesis fades it out over the first 80 samples,
+  under the noise. The silent copy carries no frame mark, so a silence frame before the mute does
+  not hold its model to mid-frame and move the fade into the second subframe. A tone left sounding
+  goes on from its phases instead, fading out linearly over 80 samples under noise that does not
+  fade. Later muted frames, and a mute before anything was played, are the noise alone. Over the
+  first 60 samples of the 13 onsets our output correlates with DVSI's at a median 0.94 (main
+  -0.08). Two candidates were measured at the six onsets on a valid frame: the last frame repeated
+  and fading out correlates 0.97 with DVSI's first 60 samples, the muted frame's own synthesis under
+  a falling gain 0.94. The first is used.
+- **What a mute leaves.** A mute silences DVSI's output, not its decoder: the model goes on
+  underneath. Through a mute, each valid voice or silence frame's own model becomes the last
+  synthesized model as an unheard synthesis of it leaves it (enhanced and smoothed), and an invalid
+  frame keeps the model it would have repeated; only the unvoiced overlap is cleared. DVSI's noise
+  generator runs one frame per muted frame. A valid voice frame still becomes the prediction history
+  when the error rate mutes it. The first frame heard again starts from that kept model, and the
+  measurements behind this are in [Rate 33 frames after a mute or a
+  tone](#rate-33-frames-after-a-mute-or-a-tone).
+
+The mute decisions and the `MUTE` flag are unchanged. Still different: DVSI's muted samples include
++-2 (2.0% each); ours are 0 and +-1 only.
+
+### Rate 33 frames after a mute or a tone
+
+TIA-102.BABA-1 does not say what the frame after a mute or a tone starts from. This library zeroed
+the last synthesized frame's amplitudes at a mute or a tone, so the mid-frame model of the next
+frame was silent: the frame played nothing for 80 samples and faded in over its second half, its
+pulse train running on from before, and after a tone the voice was also multiplied by the
+crossfade gain.
+
+DVSI's decoder synthesizes the first frame heard again from the model it kept ([Rate 33
+mutes](#rate-33-mutes)) in the ordinary way, with two differences: the kept model itself is not
+played, so the first subframe rises from silence to the mid-frame model with no unvoiced overlap
+from before, and the pulse train starts anew at the frame's start. The mid-frame model is the
+ordinary one between the kept model and the frame's own, frame marks included. After a tone, the
+tone's tail fades out on top over the same 80 samples ([Rate 33 tone
+transitions](#rate-33-tone-transitions)). The AMBE-3000R measurements agree: after lost frames and
+their mute, the next voice frame plays at its level (mbevocoder's `docs/decoder-quality.md`,
+"AMBE+2 erasures and unusable tone frames").
+
+The library now renders that frame so. The subframe synthesis takes a per-call option, separate
+from the rendering family (`MBE_SYNTHESIS_FROM_SILENCE`): the previous frame's own model plays
+nothing and counts as having no voiced band, the pulse train the previous state carries is dropped
+and a new one starts at the frame's start at phase 0, and no unvoiced overlap comes from before.
+DVSI's noise generator runs as for any frame. The rate-33 path uses it for the first valid voice or
+silence frame after a mute or a tone, with a tone's tail added over its first 80 samples and the sum
+limited, and for a lost frame below the repeat limit after a mute, which repeats the kept model from
+silence; either one uses up the request.
+
+One case rests on no measurement. A silence frame holds the previous model to mid-frame ([Rate 33
+silence frames](#rate-33-silence-frames)), and that hold continues what was heard; the kept model
+was not heard. From silence, a silence frame takes its own model at mid-frame instead: it rises from
+silence to it over the first subframe and plays it over the second. Holding the kept model would
+play speech from before the mute or the tone in the middle of a pause. No DVSI vector holds a
+silence frame right after a mute or a tone where DVSI's decoder decodes the frames before it (in the
+DTX vectors those frames are the host software's comfort noise), so this is a design choice.
+
+On `dam_e10_hd`, at the 14 frames where DVSI's decode and ours leave a mute together, the rules
+tried compare as follows (medians):
+
+| Frame after a mute | Correlation with DVSI's output: first half / second half / next frame | First half's level against DVSI's |
+|---|---|---|
+| Main: the mid-frame model silent | 0.00 / 0.04 / 0.02 | -54.2 dB |
+| The frame's own model at mid-frame | 0.84 / 0.81 / 0.63 | +2.2 dB |
+| The model from before the mute kept through it | 0.70 / 0.76 / -0.01 | -4.5 dB |
+| The muted frames' own models kept, the ordinary mid-frame model, a new pulse train (now) | 0.95 / 0.95 / 0.95 | +0.95 dB |
+
+Per 20-sample block over the frame's second-half RMS, the medians are 0.14 0.27 0.46 0.56 0.99 1.04
+0.75 1.17 on DVSI's decoder, 0.00 0.00 0.00 0.00 0.22 0.70 1.11 1.44 on main and 0.17 0.31 0.53 0.56
+1.03 0.96 0.81 1.02 now.
+
+After a tone: seven of DVSI's 52 rate-33 tone vectors (`alert`, `alltone`, `dtmf`, `dtmf25`,
+`dtmf60`, `dtmf180`, `dtmfvbad`) have a voice frame right after a tone frame, 1206 such frames in
+all. Their mean absolute level error against DVSI's decode:
+
+| Voice frames right after a tone | First half (main → now) | Second half | Whole frame |
+|---|---|---|---|
+| All 1206 | 0.35 → 0.40 dB | 2.31 → 1.61 dB | 0.58 → 0.37 dB |
+| 205 with a voiced band | | 1.48 → 1.06 dB | 0.66 → 0.57 dB |
+| 184 of V/UV row 16 | | 3.98 → 1.34 dB | 1.46 → 0.43 dB |
+| 817 of V/UV rows 17-31 | | 2.15 → 1.81 dB | 0.36 → 0.30 dB |
+
+The second half's signed median moves from -0.41 dB to +0.03 dB against DVSI's. With the frame's
+own model at mid-frame instead, the second half plays 4.4 dB loud (median), with a mean absolute
+error of 4.42 dB. A tone's first frame is unchanged (1208 frames: 0.38 / 0.21 / 0.14 dB).
+
+Still different after a tone: the pulse train of a voiced frame does not line up with DVSI's. Over
+the 205 voiced frames the next frame correlates with DVSI's waveform at a median 0.26, on main and
+now alike, where frames in running speech reach 0.9 and more; what DVSI's pulse train does through
+a tone was not determined. DVSI's tone vectors do hold the frame after a tone with a loud model kept
+through it: 478 tone starts follow a frame whose DVSI output is above RMS 300 (`alltone` 115, `dtmf`
+131, `dtmfvbad` 230, `alert` 1, `dtmf25` 1), and of the voice frames right after a tone, 477 have
+such a loud frame as the model kept through the tone, so the level figures above measure that case
+too. But in every one of those 478 the previous tone frame lies 2 to 35 frames back: the loud frames
+are the frames between tones, where the tone signal itself is coded as voice frames. What the
+vectors do not hold is a tone inside speech: speech, a tone, then different speech. For that case
+this library takes the mid-frame model between the last speech model before the tone and the
+frame's own, as for any other.
+
+### Rate 33 lost frames and tones
+
+TIA-102.BABA-1 7.3 sets the amplitude of a tone frame with ID 255 to zero whatever its AD (Table 9
+lists 255 as "Zero Amplitude"), and makes a frame with an invalid tone index an erasure, for which
+5.6 sets the model equal to the previous frame's decoded model. Neither clause says what a repeat
+plays when the frame before was a tone. This library played ID 255 as silence (fading out a tone
+left sounding); after a tone, a lost frame played the tone's tail fading out, and the frames
+repeated after it were silent.
+
+DVSI's decoder does not play ID 255 as a tone. The AMBE-3000R measurements (mbevocoder's
+`docs/decoder-quality.md`, "AMBE+2 erasures and unusable tone frames"; `docs/tone-frames.md`) show
+a tone frame whose index it cannot play, 200 and the silent tone 255 alike, playing as a lost frame:
+the last frame played repeats three times, the fourth fades, silence follows, and the next voice
+frame plays at its level. The frame repeated is the last one played, so after a tone it is the
+tone, three times at full level, the fourth faded. DVSI's vectors cannot show either rule: none
+holds a tone frame with an unusable index or a lost frame next to a tone as DVSI's decoder plays
+it. The all-ones frames of the rate-33 DTX vectors show neither: demodulated and corrected (no C0
+error, three corrected in all), each is a tone frame with index 180, which carries no tone, so a lost
+frame (`TONE`, `ERASURE` and `REPEAT`) before these changes as after them; only 49 all-ones
+parameter bits would read as ID 255. DVSI's decodes there come from its host software's
+comfort-noise request, not from the chip decoding those bits, as with D-STAR's all-ones frame
+([D-STAR lost frames](#d-star-lost-frames)).
+
+The library now follows those measurements:
+
+- **ID 255 is a lost frame.** `mbe_classifyAmbe2450Frame()` and `mbe_decodeAmbe2450Parms()` return
+  `MBE_AMBE2450_FRAME_ERASURE` for it, and the process functions flag it `ERASURE`, `REPEAT` and
+  `TONE`, as any tone frame with an unusable index. The repeat criteria still come first: a frame
+  they reject (four C0 errors, or, on the parameter-bit API without C0 context, the 2.1 heuristic)
+  is flagged `REPEAT` alone, whatever it holds.
+- **Lost frames repeat a tone.** While a tone sounds, a lost frame below the repeat limit plays the
+  tone again from its phases at its level, its repeat count running; the 4th mutes, fading the tone
+  out over 80 samples under the mute noise ([Rate 33 mutes](#rate-33-mutes)), and the voice after
+  it starts from silence ([Rate 33 frames after a mute or a
+  tone](#rate-33-frames-after-a-mute-or-a-tone)). Lost frames inside a tone are not heard: a valid
+  tone after them goes on without a fade and ends the repeat run. A repeated tone carries the flags
+  of its own frame (`REPEAT`, with `ERASURE` and `TONE` as the frame holds them), and the 4th adds
+  `MUTE`. DVSI's noise generator stands still through a repeated tone, as through a tone frame, and
+  runs through the mute that ends the run. The prediction history and the kept speech model stay
+  those from before the tone.
+
+On the DTX vectors the all-ones frames were lost frames on main too, and their per-frame flags are
+unchanged. What changes in this library's own decode is what those lost frames play: the repeated
+silence model is the 15-band one 13.8 dB lower ([Rate 33 silence
+frames](#rate-33-silence-frames)), the 4th lost frame fades it out instead of cutting to the noise,
+and the mute noise is DVSI's level ([Rate 33 mutes](#rate-33-mutes)). On `dam_dtx`, the RMS at 16
+bits of the silence frame's three repeats, the 4th lost frame and the two after it was 18.7, 18.5,
+17.8, then 2.35, 2.43, 2.37 on main, and is 3.8, 3.9, 3.7, then 1.74, 0.59, 0.54 now. None of that
+has to do with tone ID 255. DVSI's decodes play comfort noise there, so those frames are not
+compared. Playing ID 255 as a lost frame rests on the AMBE-3000R measurements alone and is recorded
+as a departure from Table 9.
+
+### 16-bit output
+
+DVSI's D-STAR and rate-33 decoders round their output to the nearest 16-bit step; its P25 decoder
+does not. TIA-102.BABA and TIA-102.BABA-1 say nothing on how the synthesized speech becomes 16-bit
+samples. This library truncated toward zero in every `short` entry point (`mbe_floattoshort()`).
+
+The share of our samples identical to DVSI's decode of the same bits, truncating and rounding to
+nearest:
+
+| Codec | `dam80` | `dam` | Mean over the 27 speech vectors |
+|---|---|---|---|
+| D-STAR | 0.384 → 0.546 | 0.204 → 0.281 | 0.140 → 0.177 |
+| Rate 33 | 0.667 → 0.684 | 0.214 → 0.284 | 0.174 → 0.190 |
+
+and the share of zero samples:
+
+| Codec, vector | DVSI | Truncating | Rounding |
+|---|---|---|---|
+| D-STAR, `dam80` | 17.2% | 30.2% | 15.4% |
+| D-STAR, `dam` | 7.0% | 12.8% | 6.5% |
+| Rate 33, `dam80` | 61.3% | 66.9% | 61.5% |
+| Rate 33, `dam` | 14.1% | 22.6% | 13.4% |
+| P25, `dam80` | 44.4% | 24.4% | 12.3% |
+
+The D-STAR and rate-33 `short` entry points now round to nearest, halves away from zero, after the
+same 7x scale, the same limit at 0.95 of full scale and the same NaN handling as before. DVSI's
+vectors tell rounding to nearest from truncation; they cannot tell one rule for halves from
+another, and halves away from zero is this library's choice. Every compiled variant (scalar, SSE2,
+AVX2, NEON) gives the same samples. P25, ProVoice, `mbe_synthesizeSpeech()`, the comfort noise and
+`mbe_floattoshort()` keep truncating: with rounding, P25's identical share falls (`dam80` 0.264 to
+0.149, `dam` 0.153 to 0.086, on a trial build), and DVSI's P25 output holds more zeros than even
+truncation gives.
+
+Measured outside the repository's tools, narrow-band PESQ (ITU-T P.862) against
+the input speech rises with the rounding on all 27 rate-33 decodes (mean 2.937 to 2.958, DVSI's
+2.981; `dam80` 2.548 to 2.822, DVSI's 2.847), and D-STAR's mean stays where it was (2.947 to 2.945,
+DVSI's 2.931), its largest falls on `dam80` and `dam40` moving to DVSI's own scores.
+
+The mute noise of both AMBE paths halves to uniform in [-0.75, 0.75] on the 16-bit scale, so that
+rounding gives the mix truncation gave D-STAR's [-1.5, 1.5]: 0 on two thirds of the samples and +-1
+on a sixth each. DVSI's muted D-STAR output on its vectors is 0 on 66.9% of the samples and +-1 on
+16.5% and 16.6%.
+
+The `short` output of the two AMBE paths is no longer `mbe_floattoshort()` of their float output. A
+caller of their float entry points who wants the same samples scales by 7, limits at 0.95 of full
+scale and rounds to nearest (`roundf()`, for example). The mute noise lies under one 16-bit step in
+the float output, so a caller who truncates gets silence where a muted frame plays the noise alone.
+`mbe_quality_eval` now takes its 16-bit output from the codec's own `short` entry points
+([Evaluator interface and measurements](testing.md#evaluator-interface-and-measurements)), so the
+scoreboard measures what those entry points return.
+
 ### Output high-pass phase
 
 DVSI's decoders, in every mode, roll off the band below 200 Hz like a second-order high-pass
@@ -551,70 +915,212 @@ With the changes above in place, DVSI's decoders still play voiced frames 0.32-0
 and unvoiced frames 0.32-0.40 dB quieter than this synthesis, in all three modes (per-frame
 medians on the development vectors, identical bits). Voiced harmonics are now rendered 0.3 dB
 louder and unvoiced ones 0.4 dB quieter, applied with the high-pass, so the model and the
-adaptive smoothing see the decoded amplitudes.
+adaptive smoothing see the decoded amplitudes. These two gains now belong to the public
+`mbe_synthesizeSpeechf()` alone: the codec paths render in subframes
+([Synthesis in subframes](#synthesis-in-subframes)), with a voiced gain of +0.55 dB and no
+unvoiced gain.
 
-### Voiced amplitude
+### Unvoiced synthesis
 
-Within a frame DVSI's decoders move a voiced harmonic from one frame's amplitude to the next's
-differently from TIA-102.BABA eq 133-135. On a DVMEGA DVstick 30
-([#157](https://github.com/arancormonk/mbelib-neo/issues/157)), D-STAR gain steps of 7.0 to 41.6 dB,
-up and down, at three positions in a stream, reach half their settled change in dB within one
-16-sample block of sample 80 of the step frame at every size (24 of 30 at 80 exactly). The
-specification's rendering, eq 135's linear amplitude for harmonics 1-7 and eq 133's crossfade with
-the window `wS` above them, reaches it at 16 to 144 samples depending on the step. On every codec
-path, a harmonic voiced in both frames at steady pitch (eq 134's pitch condition) is now
-interpolated whatever its number, with the fourth root of its amplitude moving linearly over the
-frame:
+DVSI's decoders, in every mode, draw the noise of the unvoiced bands from one 16-bit generator
+and synthesize it a 10 ms subframe at a time. TIA-102.BABA 11.2 (eq 117-126) has another
+generator and one 256-sample window per frame.
 
-```
-a_l(n) = ((1 - n/N) M_l(-1)^(1/4) + (n/N) M_l(0)^(1/4))^4
-```
+- **The generator** is `x <- 173 x + 13849 (mod 65536)` from 0, read as a signed 16-bit sample;
+  output sample t of a stream takes the state after t + 1 steps. The unvoiced parts of DVSI's
+  decodes repeat after 65536 samples, and they are the same sequence at the same position in all
+  79 speech vectors of the three modes. The generator runs one step per output sample through
+  voice, silence, repeated and muted frames, and stands still through tone frames: on `dtmfvbad`
+  it falls 160 samples behind for every tone frame, in D-STAR and in rate 33.
+- **A subframe** is 160 noise samples under a square-root triangular window two subframes long, a
+  256-point transform, each band scaled to its amplitude against that band's own noise power
+  between edges rounded to the nearest bin, the inverse transform, the same window again, and
+  overlap-add at a hop of 80 samples. A frame's own model stands at its end; the subframe at
+  mid-frame takes a model between the previous frame's and this one's
+  ([Synthesis in subframes](#synthesis-in-subframes)).
+- **The level** is the specification's scale carried to the shorter window, without the 0.4 dB
+  unvoiced render gain; the output high-pass acts on every bin, in magnitude and in phase.
 
-Over the 30 gain steps, the mean error of the level curve (the level change of each 16-sample
-block of the step frame as a fraction of the settled change) against the unit's falls from 0.103 to
-0.021; interpolating every harmonic with linear amplitude gives 0.110, a geometric mean 0.048 and
-the fourth root, the best of the power laws tried, 0.021. The curves of the unit's b0 and b1 steps
-stay as close as before. A fade from or to a silent model (after a mute or a tone, and the repeat
-limit's fade-out) keeps the specification's rendering: there the law would fade in as (n/N)^4, and the
-repeat-limit fade was matched to DVSI's with the specification's. D-STAR's voice after the repeat
-limit fades from the prediction history instead (see "D-STAR lost frames").
+The codec paths render this; the public `mbe_synthesizeSpeechf()` keeps eq 117-126 and its own
+generator. `mbe_setThreadRngSeed()` no longer reaches the codec paths' unvoiced noise, since every
+DVSI stream starts from the same state. The generator's state stays in `noiseSeed` and the second
+half of a frame's own subframe in `previousUw`, so `mbe_parms` is unchanged. A mute moves the
+generator one frame on and a tone frame leaves it where it was. D-STAR keeps the overlap of the
+frame before the tone with it, so the noise goes on after the tone where it stopped; rate 33
+clears that overlap, and the frame after a tone starts from silence
+([Rate 33 frames after a mute or a tone](#rate-33-frames-after-a-mute-or-a-tone)). A rate-33 lost
+frame that repeats a tone leaves the generator where it was too
+([Rate 33 lost frames and tones](#rate-33-lost-frames-and-tones)). The two renderings keep different things in `previousUw` and `noiseOverlap`: a
+state this one wrote is marked in the last element of `noiseOverlap`, and neither plays the
+overlap the other left, so a stream moved from one to the other fades in.
 
-The law carries less energy between two levels than linear amplitude: with it, DVSI's voiced
-frames played 0.11-0.16 dB louder than ours again (per-frame medians, development vectors). The
-voiced render gain on the codec paths is therefore +0.45 dB, chosen from +0.40, +0.45 and +0.50 dB
-on development, which puts those medians within 0.03 dB of where +0.3 dB put them with the
-specification's rendering. The public `mbe_synthesizeSpeechf()` keeps the specification's
-rendering and +0.3 dB. Measured on the unit's 179 streams from #157, which played no part in
-choosing the gain, frame levels come closer to its output in every group of streams (mean
-difference 0.62 to 0.53 dB).
+On DVSI's vectors, at joint lags against main, the log-spectral distance from DVSI's decode
+(development / validation / final):
 
-On DVSI's bits, each of the 25 development and validation vectors comes closer to DVSI's decode in
-each of the three modes, and on average closer to the input speech; 8 of the 75 move away from the
-input by at most 0.03 dB (`dam10` in every mode). The final partition, scored once, comes closer
-to both on all six of its vectors. Scored at joint lags (`voiced-amplitude` gate sets):
+| Codec | Before (dB) | After (dB) |
+|---|---|---|
+| D-STAR | 3.21 / 2.72 / 3.89 | 2.05 / 1.94 / 2.68 |
+| P25 | 3.28 / 2.73 / 3.56 | 2.26 / 1.96 / 2.41 |
+| Rate 33 | 2.97 / 2.54 / 3.59 | 2.02 / 1.86 / 2.47 |
 
-| Codec | Partition | LSD vs DVSI (dB) | Envelope corr. vs DVSI | Level vs DVSI (dB) | LSD vs input (dB) |
-|---|---|---|---|---|---|
-| D-STAR | development | 3.705 → 3.347 | 0.9523 → 0.9535 | +0.049 → +0.070 | 6.578 → 6.521 |
-| D-STAR | validation | 3.191 → 2.899 | 0.9483 → 0.9496 | +0.025 → +0.055 | 4.990 → 4.921 |
-| D-STAR | final | 4.449 → 4.162 | 0.9218 → 0.9222 | +0.168 → +0.176 | 5.759 → 5.698 |
-| P25 | development | 3.798 → 3.455 | 0.9555 → 0.9561 | +0.027 → +0.045 | 6.514 → 6.454 |
-| P25 | validation | 3.180 → 2.904 | 0.9557 → 0.9565 | -0.034 → -0.013 | 4.900 → 4.820 |
-| P25 | final | 4.146 → 3.886 | 0.9286 → 0.9289 | +0.123 → +0.100 | 5.640 → 5.548 |
-| Rate 33 | development | 3.622 → 3.260 | 0.9527 → 0.9555 | -0.244 → -0.247 | 6.513 → 6.454 |
-| Rate 33 | validation | 3.055 → 2.747 | 0.9521 → 0.9542 | -0.074 → -0.074 | 5.021 → 4.940 |
-| Rate 33 | final | 4.204 → 3.895 | 0.9321 → 0.9331 | +0.074 → +0.034 | 5.793 → 5.704 |
+Every vector comes closer. A frame with no voiced band between two such frames now correlates
+with DVSI's waveform, sample for sample, at a median 0.999 for D-STAR, 0.998 for P25 and 0.992 for
+rate 33, where the specification's rendering did not correlate at all. Under channel errors the
+frames neither decoder mutes come 0.28-0.57 dB closer and the mute decisions are unchanged.
+Declared gate that fails (`unvoiced-subframes-tones`): rate 33's `dtmf180` loses 0.3% of its
+detector windows.
 
-Most of the gain in log-spectral distance comes from interpolating every harmonic (linear
-amplitude alone: -0.31 dB on development in every mode); the fourth-root law adds the rest and
-the gains in envelope correlation and in distance from the input. Under channel errors, the
-frames that neither decoder mutes come 0.39, 0.24 and 0.48 dB closer to DVSI's (D-STAR, P25,
-rate 33, hard decisions) with mute decisions unchanged, and the encoders' bits are unchanged. On
-the tone vectors, rate 33's `alltone` agrees with DVSI's tone detector on two more windows and
-`dtmf180` on one fewer: at -49 dBFS, the voice frame right after a run of tone frames (frame
-1504, rendered with the crossfade as before, as its pitch jumps) now reads as a dual tone where
-DVSI's reads none, from the 0.15 dB of voiced gain, so `dvsi-parity-tones` and
-`voiced-amplitude-tones` fail on that window.
+### Synthesis in subframes
+
+DVSI's decoders synthesize a frame as two 10 ms subframes, the voiced part too. TIA-102.BABA
+(eq 127-141) renders a frame in one piece: harmonics 1-7 at steady pitch interpolate in amplitude
+and phase, the others crossfade under the window `wS`, and the phase integrates the pitch through
+every frame.
+
+- **Two models per frame.** A frame's own model stands at its end. A model between the previous
+  frame's and this one's stands at mid-frame: its pitch the geometric mean of the two, its
+  harmonic count that pitch's, each band's voicing this frame's at the band's frequency, its
+  magnitudes the two frames' at that frequency, met in the log domain. Unvoiced magnitudes enter
+  that mean without their factor `0.2046 / sqrt(w0)` and take the mid-frame pitch's on the way
+  out. With one frame voiced and the other not, the mid-frame pitch is the voiced frame's.
+- **Linear crossfades.** Each subframe plays the model at its start with a falling weight and
+  the model at its end with a rising one.
+- **Pitch pulses.** The voiced part is a train of pulses. Each pulse plays a model's voiced
+  harmonics, their phases the regenerated ones, peaking 16 samples after the pulse, through a
+  window that rises over 16 samples (a raised cosine), stays whole until one pitch period after
+  the pulse and falls over the 16 samples after that. A response so lasts a period and 16
+  samples and overlaps the next by 16, where the two windows add up to one: the responses of a
+  steady train add up to the harmonics. The pulse rate moves linearly from one model's
+  pitch to the next's across a subframe; into or out of voicing it keeps the voiced model's.
+  A subframe with no voiced band at either end starts the train afresh.
+
+DVSI describes a synthesis of this shape in US 8,200,497: square-root triangular windows over
+10 ms subframes, and an impulse sequence convolved with a pitch-dependent impulse response. The
+rules and constants here were measured on DVSI's decoders, from its vectors and, for D-STAR, on
+the hardware below.
+
+The codec paths render this, with a voiced gain of +0.55 dB: fully voiced frames then play
+within 0.02 dB of DVSI's (frame medians on the development vectors, all three modes; 0.09-0.12 dB
+low at the +0.45 dB of the rendering before). The pulse phase and the pulses still sounding
+travel in `noiseOverlap`, which these paths no longer use for noise, and `PSIl` and `PHIl` hold
+the harmonic phases at the frame's end as before. The public `mbe_synthesizeSpeechf()` keeps
+the specification's rendering.
+
+This replaces two approximations of the same behaviour. The fourth-root amplitude law (a
+harmonic's fourth root linear over the frame, [#157](https://github.com/arancormonk/mbelib-neo/issues/157))
+is close to two linear crossfades through a geometric mean; the phase rules (the pitch moving 16
+samples after mid-frame, a restart at `l w0 (N - 16)` on onsets) are what the pulse train gives
+at the frame's end.
+
+**On hardware.** A DVMEGA DVstick 30 played 179 constructed D-STAR streams for #157, each a step
+of one or two fields inside a held frame. Mean error against the unit's curves, per 16-sample
+block of the step frame, main and now:
+
+| Steps | Measure | Main | Now |
+|---|---|---|---|
+| 30 gain steps, 7 to 42 dB | level change as a fraction of the settled change | 0.022 | 0.009 |
+| 9 from voiced to unvoiced | difference from the unstepped stream, relative | 0.340 | 0.086 |
+| 9 from unvoiced to voiced | same | 0.443 | 0.095 |
+| 3 pitch steps | same | 0.231 | 0.123 |
+| 27 double steps | same | 0.406 | 0.341 |
+| 18 steps of one band's voicing | same | 0.294 | 0.342 |
+
+The single-band steps come out worse: on the unit a band above 1 kHz that turns voiced starts
+with the frame and one that turns unvoiced lasts to mid-frame, while the lowest band does the
+opposite on both; the mid-frame model here takes this frame's voicing for every band.
+
+On DVSI's vectors, at joint lags against the commit before (the unvoiced synthesis above),
+development / validation / final:
+
+| Codec | Waveform corr. vs DVSI, sample for sample | LSD vs DVSI (dB) |
+|---|---|---|
+| D-STAR | 0.69 / 0.67 / 0.55 → 0.95 / 0.93 / 0.93 | 2.03 / 1.94 / 2.60 → 1.55 / 1.37 / 1.81 |
+| P25 | 0.85 / 0.86 / 0.87 → 0.92 / 0.94 / 0.93 | 2.24 / 1.94 / 2.41 → 1.76 / 1.40 / 1.73 |
+| Rate 33 | 0.91 / 0.93 / 0.91 → 0.94 / 0.95 / 0.95 | 1.99 / 1.81 / 2.47 → 1.47 / 1.26 / 1.73 |
+
+Every vector comes closer to DVSI's decode and 0.06-0.11 dB closer to the input speech; under
+channel errors the frames neither decoder mutes come 0.22-0.52 dB closer with the mute decisions
+unchanged. The `voiced-subframes` gate sets were declared before scoring. The first run, at the
+old voiced gain, failed their level check in every mode (the level against DVSI's moved by -0.14
+to -0.19 dB, allowed 0.1); the gain was then set on development frame medians and the sets scored
+again. They now pass except one check: rate 33's validation vectors gain 0.020 in waveform
+correlation where the set asks for 0.03.
+
+By frame class, main and now: the correlation of a frame with DVSI's waveform (median / mean
+over eleven development vectors, frames above -56 dBFS in DVSI's output). In the first three
+classes the frame and both its neighbours are of the kind named.
+
+| Codec | Build | No voiced band | Every band voiced | Some bands voiced | First voiced frame | First unvoiced frame |
+|---|---|---|---|---|---|---|
+| D-STAR | main | 0.001 / -0.001 | 0.928 / 0.604 | 0.919 / 0.612 | 0.477 / 0.409 | 0.246 / 0.297 |
+| D-STAR | now | 0.999 / 0.946 | 0.966 / 0.949 | 0.964 / 0.944 | 0.955 / 0.921 | 0.956 / 0.903 |
+| P25 | main | 0.000 / 0.000 | 0.935 / 0.790 | 0.940 / 0.782 | 0.642 / 0.523 | 0.415 / 0.400 |
+| P25 | now | 0.998 / 0.947 | 0.955 / 0.890 | 0.965 / 0.922 | 0.953 / 0.913 | 0.945 / 0.871 |
+| Rate 33 | main | 0.004 / 0.004 | 0.959 / 0.866 | 0.938 / 0.849 | 0.297 / 0.330 | 0.330 / 0.344 |
+| Rate 33 | now | 0.992 / 0.930 | 0.969 / 0.931 | 0.969 / 0.945 | 0.976 / 0.948 | 0.967 / 0.882 |
+
+The first voiced frame after an unvoiced one played a median 1.8-2.1 dB louder than DVSI's on
+main and plays 0.10-0.14 dB louder now; the first unvoiced frame after a voiced one 1.2-1.4 dB
+louder on main and within 0.14 dB now. The means of the unvoiced frames sit under their medians
+because of the frames whose pitch code or V/UV row tells DVSI's decoder more than is modelled
+([Known differences](#known-differences)).
+
+### Voiced onsets and offsets
+
+Where a voiced run starts and ends inside a frame is not always in the model. DVSI's decoders
+read it from fields the specifications leave free, and the decoders here now mark a frame with
+what those fields say (one mark per frame, in the unused element 0 of `PHIl`):
+
+- **Unvoiced frames have pitch codes of their own.** DVSI's encoders give a frame with no voiced
+  band either one default pitch code (P25 b0 25, D-STAR b0 34: 71% of the unvoiced frames of
+  the speech vectors in both) or a code from a range they use for nothing else (P25 b0 128..183,
+  D-STAR b0 64..119). Rate 33 has its V/UV rows 16 to 31 for this.
+- **Outside those ranges the voicing before lasts to mid-frame.** A P25 or D-STAR frame with no
+  voiced band at any other pitch code takes the previous frame's voicing for its mid-frame
+  model when that voicing reaches 505 Hz, the pulse train runs on at the old pitch through the
+  whole frame, and a voiced frame after it continues the train. On the DVstick 30 (#157) a frame
+  whose b1 alone is set to 0 plays exactly as its voiced neighbour would through sample 80, at
+  b0 20 and at the pitch code of the frame it was made from, and departs from the frame's first
+  sample at b0 100. On DVSI's vectors the default-code frames after a voiced frame correlate
+  0.84-0.96 with DVSI's waveform, from 0.58-0.88, and voiced runs after one such frame are
+  aligned with DVSI's in 98 of 105 cases for P25 (67 of 98 before) and 83 of 91 for D-STAR (47 of
+  85). The 505 Hz comes from P25: three voiced harmonics reaching 502.6 Hz do not hold and three
+  reaching 507.9 Hz do. Rate 33's row 16 ends the voicing where the frame starts.
+- **D-STAR b0 64..71, 88..103 and 112..119 carry their pitch** into a voiced frame after them:
+  its first subframe runs at the geometric mean of the two pitches (253 onsets of 253 on DVSI's
+  vectors), and at the voiced frame's own pitch after any other unvoiced frame (925 of 925).
+- **Late onsets.** A rate-33 frame coded with V/UV row 15 after an unvoiced one starts its
+  voiced bands in its second subframe, and so does a P25 frame whose voicing does not reach
+  505 Hz (all 40 such onsets on DVSI's vectors).
+
+With these, voiced runs after two or more unvoiced frames start where DVSI's do in 95% of cases
+for P25 (791 of 831 on ten vectors), 96% for D-STAR (812 of 846) and 96% for rate 33 (775 of
+810). Not resolved: of the 64 P25 onsets voiced in the lowest band and in bands above it, but not
+at 505 Hz, 43 start with the frame, 17 in its second subframe and 4 elsewhere, and no rule
+separates them (the width of the widest upper voiced region does for 53 of 57). See also
+[Known differences](#known-differences) for what the unvoiced pitch codes and rate 33's rows 17
+to 31 further tell DVSI's decoder.
+
+### Amplitude limit
+
+TIA-102.BABA eqs 115-116 scale a frame's amplitudes down whenever they sum past a threshold, 20480
+with error-free bits. DVSI's P25 and rate-33 decoders do not: on identical bits, the frames that eq
+116 scales (1.7% of rate 33's loud voice frames on the development vectors, 1% of P25's) play
+within 0.01-0.13 dB (medians) of their unscaled level on DVSI's decoder, where eq 116 left them 2.95
+and 1.05 dB quieter. Those paths, ProVoice's with P25's, now skip the scaling; eqs 111-114 (the
+smoothed energy and the voicing threshold under errors) are unchanged. As a numeric guard they
+still scale a frame whose amplitudes sum past 10^9, about 94 dB over 20480 and far beyond
+full-scale output. D-STAR keeps it: there its
+frames sit 0.22 dB under DVSI's with the scaling and 0.52 dB over it without, and the loudest
+D-STAR frames already play louder than a DVstick 30 (see [Known differences](#known-differences)).
+The public `mbe_synthesizeSpeechf()` keeps eq 116.
+
+On the scoreboard, against the commit before it: the level offset from DVSI's decoder falls from
+a mean of 0.332 to 0.065 dB on rate-33 development (`lvl` -3.55 to +0.22 dB, `dam_10ov` -2.02 to
+-0.02) and from 0.195 to 0.131 on P25; log-spectral distance against DVSI falls 0.082 and 0.016 dB
+(development), 0.009 and 0.012 (validation). D-STAR's output, every encoder's bits, the channel and
+tone results are unchanged. The declared gate that rate 33's level move by at most 0.2 dB fails, on
+that move toward DVSI (`lvl`).
 
 ### Encoder voicing over background noise
 
@@ -724,8 +1230,13 @@ Variants that changed the periodicity gate instead were rejected for real low vo
 
 Still different:
 
-- Pauses keep their level: DVSI's encoders bring background noise down, this library's do not.
-  A model fitted to DVSI's suppression of added noise did not carry over to its real recordings.
+- Pauses keep their level: DVSI's encoders bring background noise down, this library's do not
+  (a median 9.2 dB between the two encodings in the quietest quarter of a vector's frames, see
+  [Known differences](#known-differences)). A model fitted to DVSI's suppression of added noise did
+  not carry over to its real recordings. A second attempt in November 2026, a per-band gain over
+  a tracked noise floor, did no better: its pauses stayed 3.1-7.9 dB from DVSI's encodings on the
+  development vectors and 4.0-11.5 dB on the validation vectors, and it took `dam40` and `dam80`
+  down 13 dB, where DVSI's encoding lies no lower than an unsuppressed one.
 - A quiet voice whose harmonics are weak beside its fundamental, low and in noise, is periodic in
   the voice band only faintly and can lose voicing like hum. A synthetic 66 Hz voice at about
   -50 dBFS with harmonics falling as 1/h², at about 10 dB SNR, keeps voicing in 33-43% of frames,
@@ -746,7 +1257,16 @@ Still different:
 | Rate-33 harmonic count, b0 17 | Annex A: 11 | 12 | DVSI |
 | Rate-33 repeat | eq 57-58: `eps_0 >= 4`, or `eps_0 >= 2` and `eps_T >= 6` | `eps_0 >= 4` | DVSI |
 | P25 output under channel errors | eq 112-116 | attenuates progressively | specification |
-| Voiced amplitude within a frame (P25, and rate 33, whose synthesis TIA-102.BABA-1 takes from TIA-102.BABA) | eq 133-135: harmonics 1-7 at steady pitch interpolate linearly, the others crossfade with `wS` | every harmonic at steady pitch, its fourth root linear | DVSI ([Voiced amplitude](#voiced-amplitude)) |
+| Unvoiced synthesis (P25, and rate 33, whose synthesis TIA-102.BABA-1 takes from TIA-102.BABA) | eq 117-126: the 11.2 noise generator, one 256-sample window per frame | a 16-bit generator, `x <- 173 x + 13849`, and 10 ms subframes under a square-root triangular window | DVSI ([Unvoiced synthesis](#unvoiced-synthesis)) |
+| Voiced synthesis (P25, rate 33) | eq 127-141: a frame in one piece; harmonics 1-7 at steady pitch interpolate linearly, the others crossfade with `wS`; the phase advances by `l 80 (w0(-1) + w0(0))` per frame, through unvoiced frames too | two 10 ms subframes around a mid-frame model, linear crossfades, a train of pitch pulses that starts afresh after an unvoiced subframe | DVSI ([Synthesis in subframes](#synthesis-in-subframes)) |
+| Where voicing starts and ends inside a frame (P25, rate 33) | the frame's V/UV decisions hold for the whole frame | the pitch code of a frame with no voiced band (P25), V/UV row 15 (rate 33) and how far up the voicing reaches (P25) move it to mid-frame | DVSI ([Voiced onsets and offsets](#voiced-onsets-and-offsets)) |
+| Rate-33 tone frames | clause 7 gives the tone a frame carries, nothing on the frames around it | the tone crossfades with the speech over 80 samples at both ends | DVSI ([Rate 33 tone transitions](#rate-33-tone-transitions)) |
+| Rate-33 silence frames | 4.1 eq 2: L = 14; 4.3-4.4: amplitudes decoded as a voice frame's | 15 bands, amplitudes a further 13.8 dB down, the previous frame's model held to mid-frame | DVSI ([Rate 33 silence frames](#rate-33-silence-frames)) |
+| Rate-33 mute | 5.7: bypass the synthesis, output noise uniform over [-5, 5] | noise of RMS about 0.6 (0, +-1 and a few +-2 at 16 bits); the first muted frame fades the last frame out over 80 samples; the model goes on underneath | DVSI's level, as 0 and +-1 ([Rate 33 mutes](#rate-33-mutes)) |
+| Rate-33 tone ID 255 | 7.3 and Table 9: a tone of zero amplitude, whatever AD | a lost frame, as an unusable tone index | DVSI ([Rate 33 lost frames and tones](#rate-33-lost-frames-and-tones)) |
+| Rate-33 frame repeat after a tone | 7.3 with 5.6: the previous frame's decoded model; silent on a tone before it | the tone repeats at its level until the repeat limit's mute fades it out | DVSI ([Rate 33 lost frames and tones](#rate-33-lost-frames-and-tones)) |
+| Amplitude limit (P25, rate 33) | eqs 115-116 scale a frame whose amplitudes sum past 20480 (error-free) | no scaling | DVSI ([Amplitude limit](#amplitude-limit)) |
+| Rate-33 V/UV vectors | Annex B rows and eq 5's columns; rows 17-31 all unvoiced | each voiced column reaches 250 Hz into an unvoiced one below; row 17 voices its lowest column | DVSI ([Rate 33: V/UV vectors](#rate-33-vuv-vectors)) |
 | Encoder voicing over background noise | eq (37) decides voicing from the fit error and E(P) alone | suppresses background noise by default (documented); voices far less of it at low pitches | at pitches below about 90 Hz a 500 Hz column holding little more than the learned background noise is unvoiced ([Encoder voicing over background noise](#encoder-voicing-over-background-noise)) |
 
 The P25 attenuation is not adopted: no rule tried (eq 112-116 as printed, and instantaneous,
@@ -758,8 +1278,55 @@ the input speech than DVSI's (log-spectral distance from the input at 10% bit er
 
 - Soft-decision D-STAR streams are not muted on the error level, where DVSI mutes some of them
   (see above).
-- After a fully unvoiced gap DVSI repositions the voiced pulse train in a way no simple rule
-  reproduced; within voiced runs, including pitch steps, our pulse positions follow DVSI's.
+- Rate-33 V/UV rows 1, 3, 13, 15 and 17: DVSI's decoder plays some of their columns between voiced
+  and unvoiced, a state the binary voicing of `mbe_parms` cannot hold; this library plays them
+  voiced, the nearer value.
+- Rate-33 V/UV rows 18 to 31 play as plain noise here, as Annex B gives them and as row 16 does.
+  DVSI's decoder plays them otherwise, and DVSI's encoder sends rows 17 to 31 on 12.2% of the voice
+  frames of the speech vectors (row 16 on 37.3%). Against a frame of row 16, rows 18 to 23 change
+  the frame's second half and the start of the next frame, rows 26 to 31 its first half, rows 24
+  and 25 both; and part of what DVSI plays there is impulsive (kurtosis 13.7 on row 20 and about 7
+  on rows 24 and 25, against 2.7 for noise) without being periodic at the frame's pitch. Our
+  frames correlate with DVSI's 0.99 on row 16, 0.91-0.96 on rows 18, 19, 21 to 23, 26, 27, 30 and
+  31, 0.82-0.83 on rows 28 and 29, 0.74 on row 20 and 0.34-0.47 on rows 24 and 25. What each row
+  tells the decoder is not determined.
+- The pitch code of a P25 or D-STAR frame with no voiced band tells DVSI's decoder more than the
+  marks of [Voiced onsets and offsets](#voiced-onsets-and-offsets). Frames at the encoders' default
+  codes (P25 b0 25, D-STAR b0 34) match DVSI's output sample for sample, across level steps too
+  (median correlation 0.999). At the 56 codes kept for unvoiced frames (P25 b0 128..183, D-STAR b0
+  64..119, seven blocks of eight in both) they correlate 0.87-0.98: where the level steps up,
+  DVSI plays one half of such a frame, or the start of the next, 1 to 9 dB quieter than this
+  library, and which half and by how much goes with the block and with the code's low bits. A
+  D-STAR frame of this kind right before a tone plays its second half a median 7.5 dB louder here
+  than on DVSI's decoder. It reads as if the code said how the frame's energy lies in its two
+  halves; the law is not determined.
+- P25 tones. P25 has no tone frames, and DVSI's encoder sends a tone it detects as voice frames
+  at a pitch whose harmonics carry it, with one frame of that pitch and no amplitude after it.
+  DVSI's decoder brings such a tone in at its full level over the first 80 samples of its first
+  frame (0.13, 0.40, 0.61, 0.90 of the tone's level in 20-sample blocks, 65 onsets of `dtmf`), as
+  its rate-33 decoder does a tone frame, and plays the unvoiced frame before it, whose amplitudes
+  already hold part of the tone, much quieter than this library. Here the first frame follows the mid-frame model like
+  any voiced onset (0.01, 0.03, 0.04, 0.04, then 0.18, 0.47, 0.71, 0.95), which on speech is what
+  DVSI's decoder does at every size of step (2106 P25 onsets, also those whose two strongest
+  harmonics hold 95% of the energy). What tells its decoder the two apart was not found. Over
+  the 52 tone vectors decoded as P25, frame for frame, the first frame of a tone lies 4.3 dB from
+  DVSI's level (791 frames; 1.3 dB on main, whose faster onset is 2 dB too loud on speech), the
+  steady frames 0.56 dB (0.62 on main; their median correlation with DVSI's waveform 0.85, from
+  0.76), a tone's last frame 0.46 dB (1.24) and the frame after it 4.8 dB (6.7).
+- P25 voiced onsets whose voicing covers the lowest band and bands above it but not 505 Hz: 17 of
+  64 start in the frame's second subframe on DVSI's decoder and no rule found separates them
+  ([Voiced onsets and offsets](#voiced-onsets-and-offsets)); all start with the frame here.
+- A single band whose voicing changes between two frames, on a DVMEGA DVstick 30
+  ([#157](https://github.com/arancormonk/mbelib-neo/issues/157)): a band above 1 kHz that turns
+  voiced starts with the frame and one that turns unvoiced lasts to mid-frame, and the lowest band
+  does the opposite on both. The mid-frame model here takes the current frame's voicing for every
+  band ([Synthesis in subframes](#synthesis-in-subframes)).
+- Encoder: pauses keep their level, where DVSI's encoders suppress background noise
+  ([Encoder voicing over background noise](#encoder-voicing-over-background-noise)). In the
+  quietest quarter of each speech vector's frames, our rate-33 encoding decodes a median 9.2 dB
+  above DVSI's encoding of the same input (0.2 to 13.6 dB per vector, `dam40` and `dam80` aside,
+  whose input lies 40 and 80 dB down); the loudest quarter sits within 2.0 dB on every vector but
+  `dam10` (+4.2).
 - DVSI hard-clips at full scale; this library clips at 0.95 of full scale. Clipping at full
   scale moved no metric, so it is not adopted.
 - A frame at the largest D-STAR gain and b3 (b2 63, b3 511; `9E B0 6F EE F8 7B 9F FE 74`) held
@@ -783,8 +1350,29 @@ the input speech than DVSI's (log-spectral distance from the input at 10% bit er
 - Small pitch differences remain: P25 codes up to 0.07% from DVSI's (rounding-like), D-STAR codes
   within 0.03%.
 - DVSI's rate-33 encoder sends V/UV indices 17-31 on some voice frames, where clause 4.2
-  searches 0-16 and keeps the lowest index on ties. Those rows are all unvoiced, as row 16 is, so
-  the bits differ and the decoded voicing does not.
+  searches 0-16 and keeps the lowest index on ties, and this library's encoder never sends them.
+  Rows 18-31 decode all unvoiced here, as row 16 does; row 17 voices its lowest column
+  ([Rate 33: V/UV vectors](#rate-33-vuv-vectors)).
+- Rate-33 silence frames play on 15 bands on the strength of the published AMBE-3000R measurements;
+  DVSI's vectors do not tell 14 bands from 15. A run of consecutive silence frames is not verified,
+  since DVSI's vectors hold none ([Rate 33 silence frames](#rate-33-silence-frames)).
+- Rate-33 mute noise: DVSI's muted samples include +-2 (2.0% each on `dam_e10_hd`); ours are 0 and
+  +-1 only ([Rate 33 mutes](#rate-33-mutes)).
+- After a rate-33 tone, the pulse train of a voiced frame does not line up with DVSI's (median
+  correlation of the next frame with DVSI's waveform 0.26, against 0.9 and more in running speech),
+  and what DVSI's decoder plays after a tone inside speech (speech, a tone, then different speech)
+  is not known: its tone vectors hold loud frames before a tone only between tones, where the tone
+  signal is coded as voice frames ([Rate 33 frames after a mute or a
+  tone](#rate-33-frames-after-a-mute-or-a-tone)).
+- A rate-33 silence frame right after a mute or a tone rises from silence to its own model. No DVSI
+  vector shows that case, and the rule is a design choice ([Rate 33 frames after a mute or a
+  tone](#rate-33-frames-after-a-mute-or-a-tone)).
+- Rate-33 tone frames with an unusable index (ID 255 included) and lost frames next to a tone
+  follow the published AMBE-3000R measurements; no DVSI vector shows how DVSI's decoder plays them
+  ([Rate 33 lost frames and tones](#rate-33-lost-frames-and-tones)).
+- P25's 16-bit output holds more zero samples on DVSI's decoder than truncation gives (`dam80`:
+  44.4% against 24.4%; rounding to nearest gives 12.3%). This library keeps truncating, which comes
+  closer; DVSI's rule is not determined ([16-bit output](#16-bit-output)).
 
 ## Measured results
 
@@ -915,6 +1503,150 @@ agreement is unchanged. The remaining discrepancy belongs to speech synthesis on
 regions, whose spectral comparisons above have mixed results. The detector gate remains failing with
 its original threshold; improving DVSI waveform parity in those regions is the remaining work.
 
+### November 2026: synthesis in subframes
+
+Main (`8875729`) against the three synthesis changes of November 2026 together
+([Unvoiced synthesis](#unvoiced-synthesis), [Synthesis in subframes](#synthesis-in-subframes) with
+[Voiced onsets and offsets](#voiced-onsets-and-offsets), [Rate 33 tone
+transitions](#rate-33-tone-transitions)), both scored at their joint lags. No partition was held
+out ([Method](#method)). Decoding DVSI's bits:
+
+| Codec | Partition | LSD vs DVSI (dB) | Waveform corr. vs DVSI, sample for sample | Envelope corr. vs DVSI | LSD vs input (dB) |
+|---|---|---|---|---|---|
+| D-STAR | development | 3.20 → 1.55 | 0.673 → 0.946 | 0.969 → 0.988 | 6.53 → 6.41 |
+| D-STAR | validation | 2.72 → 1.37 | 0.655 → 0.930 | 0.963 → 0.985 | 4.95 → 4.85 |
+| D-STAR | final | 3.87 → 1.81 | 0.499 → 0.932 | 0.946 → 0.978 | 5.70 → 5.56 |
+| P25 | development | 3.27 → 1.76 | 0.831 → 0.918 | 0.973 → 0.988 | 6.44 → 6.32 |
+| P25 | validation | 2.71 → 1.40 | 0.851 → 0.942 | 0.969 → 0.987 | 4.83 → 4.73 |
+| P25 | final | 3.56 → 1.73 | 0.818 → 0.934 | 0.959 → 0.984 | 5.54 → 5.38 |
+| Rate 33 | development | 2.95 → 1.47 | 0.896 → 0.943 | 0.979 → 0.991 | 6.40 → 6.29 |
+| Rate 33 | validation | 2.51 → 1.26 | 0.923 → 0.952 | 0.973 → 0.988 | 4.94 → 4.84 |
+| Rate 33 | final | 3.59 → 1.73 | 0.867 → 0.949 | 0.961 → 0.977 | 5.69 → 5.54 |
+
+Every one of the 81 decodes comes closer to DVSI's in log-spectral distance, by 0.41 dB (P25
+`dam80`) to 3.86 dB (D-STAR `dam10`). The level against DVSI's stays within 0.11 dB in every codec
+and partition (means of the vectors' absolute offsets; up to 0.18 dB on main).
+
+- **Channel errors.** The mute decisions are unchanged at every error rate, hard and soft. On
+  the loud frames neither decoder mutes, the log-spectral distance from DVSI's decode falls by
+  1.06 dB for D-STAR (hard decisions; 0.89 soft), 0.60 dB for P25 (0.49) and 0.92 dB for rate 33
+  (0.81), means over the four error rates.
+- **Tones.** On the 104 D-STAR and rate-33 tone vectors the tone detector agrees with DVSI's
+  output more often on ten and less often on one (rate 33's `dtmfvbad`, 99.38% to 98.96% of its
+  windows, see [Rate 33 tone transitions](#rate-33-tone-transitions)); no window plays a wrong
+  tone, and the level error of the steady tones changes by at most 0.09 dB on a vector. P25,
+  which carries tones as voice, is in [Known differences](#known-differences).
+- **Encoders.** Every encoder's bits are unchanged, and so are the encoder comparisons: both
+  runs' encodings were decoded by the same decoder.
+- **Cost.** A complete frame decode takes 17-24% longer, about 1 µs a frame
+  ([benchmarks](testing.md#subframe-synthesis)): the pitch pulses are rendered by scalar code.
+
+The gate sets (`unvoiced-subframes-*`, `voiced-subframes-*`, `ambe2450-tone-fade-*` in
+`tools/quality/dvsi_gates.json`) were declared per change before that change was scored, each
+against the commit before it; their failing checks are named in the three sections.
+
+### November 2026: rate-33 frame handling
+
+Main (`75544c9`, 2.6.8) against the five changes of 2.6.9: [Rate 33 silence
+frames](#rate-33-silence-frames), [Rate 33 mutes](#rate-33-mutes), [Rate 33 frames after a mute or
+a tone](#rate-33-frames-after-a-mute-or-a-tone), [Rate 33 lost frames and
+tones](#rate-33-lost-frames-and-tones) and [16-bit output](#16-bit-output). The first four change
+mostly frames the scoreboard leaves out (tone transitions, and muted frames with their neighbours):
+those frames are judged by the unit tests and by the measurements in their sections, and the
+scoreboard's gate sets check that the rest does not move.
+
+Two comparisons, each with both builds aligning freely first and then scored at their joint lags,
+both runs' encodings decoded by the candidate's decoder. No partition was held out: the
+measurements that found these rules read all the vectors, so every figure is retrospective.
+
+**Frame handling** (main against the four frame-handling changes; `ambe2450-frames-*`). All five
+gate sets pass.
+
+- **Speech.** No decode changes in any mode on any partition (DVSI's speech vectors hold no silence
+  frame, lost frame or tone), and no encoder's bits change.
+- **Tones.** D-STAR and P25 are unchanged in every tone metric. On rate 33 the tone detector agrees
+  with DVSI's output on 99.45% of `dtmfvbad`'s windows, from 98.96% ([Rate 33 tone
+  transitions](#rate-33-tone-transitions)), and as before on the other 51 vectors; no window plays a
+  wrong tone, and the level, frequency and balance errors of the steady tones are unchanged.
+- **Channel errors** (`dam` at 1.1, 2.2, 4.9 and 10.6% bit errors, hard and soft decisions). The
+  mute decisions are unchanged in every mode at every error rate (rate 33's agreement with DVSI's
+  on loud frames: 100%, 100%, 100% and 92.5% hard, 96.9% soft at 10.6%), and D-STAR's and P25's
+  output is unchanged. On the loud frames neither decoder mutes, rate 33's log-spectral distance
+  from DVSI's decode falls by 0.13 dB at 10.6% with hard decisions (0.03 dB as the mean of the four
+  rates; coverage 0.75) and by 0.015 dB at 10.6% with soft ones, and does not change at the lower
+  rates. That metric leaves out muted frames and their neighbours, which are the frames these
+  changes are about; the sections above measure them.
+
+**Rounding** (the commit before it against the rounding; `pcm-rounding-*`).
+`pcm-rounding-validation`, `-final` and `-channel` pass; `pcm-rounding-development` and `-tones`
+fail:
+
+- **Development, the level check** (the level against DVSI's decode may move by 0.05 dB on any
+  vector). On `dam80` it moves by +0.18 dB for D-STAR (-0.02 to +0.16 dB) and +0.15 dB for rate 33
+  (-0.14 to +0.01 dB), and on `dam40` by +0.09 dB (D-STAR, -0.04 to +0.05) and +0.08 dB (rate 33,
+  -0.05 to +0.03). Those two inputs lie 80 and 40 dB down, where truncation's dead zone removed part
+  of the signal. With rounding, `dam80` sits where the same decoder puts `dam` against DVSI's level
+  (D-STAR +0.16 against +0.10 dB, rate 33 +0.01 against +0.00 dB); with truncation it sat 0.12 and
+  0.15 dB below that. Every other vector moves by less than 0.01 dB.
+- **Tones**, two checks declared with no tolerance ("not higher on any vector"), by amounts of
+  rounding noise: the relative frequency error rises by at most 3.9e-7 (D-STAR) and 6.8e-7 (rate
+  33) on a vector, and the balance of a dual tone's components by at most 0.0008 and 0.0003 dB. The
+  detector's agreement and the wrong-tone fraction are unchanged on every vector, and the level
+  error of the steady tones changes by at most 0.0012 dB.
+
+The other checks pass. The log-spectral distance from DVSI's decode falls by 1.04 dB on D-STAR
+`dam80` (3.42 to 2.38), 0.70 dB on D-STAR `dam40` (2.49 to 1.79), 0.40 dB on rate-33 `dam80` (3.03
+to 2.63) and 0.19 dB on rate-33 `dam40` (1.90 to 1.71); on the other vectors it moves by less than
+0.01 dB (it rises on 21 D-STAR and 19 rate-33 vectors, by at most 0.0017 dB). The sample-for-sample
+waveform correlation with DVSI's decode is unchanged to the fourth decimal on every vector but
+`dam80` (+0.0007 D-STAR, +0.0001 rate 33). P25's decodes are byte-identical, every encoder's bits
+are unchanged, and under channel errors the mute decisions are unchanged and the distance on the
+loud frames neither decoder mutes moves by 0.0002 dB at most. Partition means:
+
+| Codec | Partition | LSD vs DVSI (dB) | Waveform corr. vs DVSI, sample for sample | Level vs DVSI (dB) | LSD vs input (dB) |
+|---|---|---|---|---|---|
+| D-STAR | development | 1.548 → 1.461 | 0.946 → 0.946 | -0.005 → +0.010 | 6.413 → 6.431 |
+| D-STAR | validation | 1.371 → 1.372 | 0.930 → 0.930 | -0.020 → -0.018 | 4.853 → 4.854 |
+| D-STAR | final | 1.805 → 1.806 | 0.932 → 0.932 | +0.040 → +0.042 | 5.560 → 5.561 |
+| Rate 33 | development | 1.470 → 1.440 | 0.943 → 0.943 | -0.013 → +0.000 | 6.285 → 6.264 |
+| Rate 33 | validation | 1.257 → 1.257 | 0.952 → 0.952 | -0.055 → -0.053 | 4.837 → 4.838 |
+| Rate 33 | final | 1.728 → 1.728 | 0.949 → 0.949 | -0.089 → -0.088 | 5.539 → 5.539 |
+
+P25 is unchanged in every column. The development rows move because `dam40` and `dam80` are
+development vectors. D-STAR's distance from the input rises on `dam80`, 6.37 to 6.64 dB, toward
+DVSI's own decode's 6.71 dB; rate 33's falls, 6.23 to 5.98 dB (DVSI's 6.03 dB).
+
+**Byte identity.** Decodes of DVSI's vectors (27 speech, 52 tone and 8 channel vectors, and for
+D-STAR and rate 33 the three DTX vectors), PCM and per-frame flags, hard and soft:
+
+- Main against the four frame-handling changes (before the rounding): every D-STAR stream (90 of
+  90) and every P25 stream (87 of 87) is identical in PCM and flags. Rate 33's flags are identical
+  on all 90 streams and its PCM on 78; the other twelve are the seven tone vectors with a voice
+  frame right after a tone ([Rate 33 frames after a mute or a
+  tone](#rate-33-frames-after-a-mute-or-a-tone)), `dam_e10_hd`, `dam_e10_sd` and the three DTX
+  vectors. No rate-33 speech vector and no channel vector up to 4.9% bit errors changes.
+- The rounding against the commit before it: P25 is identical on all 87 streams, PCM and flags;
+  every D-STAR and rate-33 stream differs in PCM, and none in flags.
+
+**DTX and channel-error vectors**, our decode against DVSI's decode of the same bits, main and now
+(details in each section):
+
+| Frames | Measure | Main | Now |
+|---|---|---|---|
+| Silence frames of the DTX vectors, after a voiced frame (53) | frame correlation, median | 0.631 | 0.979 |
+| Silence frames of the DTX vectors, after a frame with no voiced band (84) | frame correlation, median | 0.852 | 0.994 |
+| `dam_e10_hd`, muted frames inside muted runs (185) | RMS on the 16-bit scale, median (DVSI 0.59) | 2.46 | 0.58 |
+| `dam_e10_hd`, mute onsets (13) | waveform correlation over the first 60 samples, median | -0.08 | 0.94 |
+| `dam_e10_hd`, frames leaving a mute (14) | correlation, first half / second half / next frame, medians | 0.00 / 0.04 / 0.02 | 0.95 / 0.95 / 0.95 |
+| `dam_e10_hd`, frames leaving a mute (14) | first half's level against DVSI's, median | -54.2 dB | +0.95 dB |
+| Tone vectors, voice frames right after a tone (1206) | mean absolute level error, whole frame | 0.58 dB | 0.37 dB |
+
+The share of samples identical to DVSI's, with the rounding, rises on every codec it applies to
+(mean over the 27 speech vectors 0.140 to 0.177 for D-STAR and 0.174 to 0.190 for rate 33,
+[16-bit output](#16-bit-output)). The golden PCM hashes that moved are the int16 hashes of the
+D-STAR and rate-33 sequences, which now hash what their `short` entry points return; the float
+hashes are unchanged.
+
 ### Scoring history
 
 The final partition was scored twice, with the library unchanged in between. The first scoring fixed
@@ -930,3 +1662,13 @@ runs are now scored at joint lags: each comparison at the lag of whichever run a
 higher correlation
 ([DVSI scoreboard](testing.md#dvsi-scoreboard)). Nothing else changed between the two scorings, and the
 tone gate failed in both, on windows of the same kind.
+
+The November 2026 synthesis changes were each scored once against the commit before them, with
+two exceptions. The voiced synthesis was scored at a voiced gain of +0.45 dB first, failed its level
+check, and was scored again after the gain was set on development frame medians ([Synthesis in
+subframes](#synthesis-in-subframes)). And the tone partition was scored again for each change
+after a late correction to D-STAR's unvoiced overlap across a tone, which changes seven D-STAR
+tone vectors and no other stream: every check came out as before. The D-STAR checks of
+`ambe2450-tone-fade-tones` were tightened after its first scoring, from the mean level and the
+detector agreement to no change on any vector in the five metrics its description names, and
+pass. The final partition was not held out for these changes.
