@@ -2,6 +2,7 @@
 # SPDX-License-Identifier: GPL-2.0-or-later
 # lib/<abi>/libvokoderyardimci.so'yu (eklenti yukleyicisi, AYRI SUREC) vokoder_yardimci.c'den uretir.
 # Cikti: app/src/main/jniLibs/{arm64-v8a,armeabi-v7a}/libvokoderyardimci.so
+#        app/src/main/jniLibs/arm64-v8a/libvokoderyardimci_x86_64.so (x86_64 emulatorler)
 #
 # NEDEN AYRI SUREC (2026-11-16, lisans incelemesi Y1, karar b): vokoder eklentisi
 # (mbelib-neo, GPL-2.0-or-later) eskiden uygulamanin surecine dlopen ile yukleniyordu.
@@ -10,6 +11,12 @@
 #
 # NEDEN lib*.so ADI: paket yoneticisi yalnizca lib*.so dosyalarini nativeLibraryDir'e
 # cikarir; Android 10+ yurutulebilir dosyayi yalnizca oradan calistirmaya izin verir.
+#
+# NEDEN arm64-v8a KLASORUNDE BIR x86_64 IKILI (2026-11-17): x86_64 emulatorler (BlueStacks)
+# APK'da x86 kitapligi olmadigi icin uygulamayi arm64 cevirisiyle kurar ve yalniz
+# lib/arm64-v8a'yi cikarir; ama ARM yurutulebilirini calistiramaz ("not executable:
+# 64-bit ELF file"). Bu kopya orada yerel calisir ve eklentinin x86_64 ikilisini acar.
+# ARM cihazlarda hic kullanilmaz.
 #
 # DINAMIK + PIE: eklentiyi dlopen ile acmak icin bionic'in dinamik baglayicisi gerekir.
 # Gerekenler: Android SDK icinde NDK 28.2.13676358.
@@ -27,13 +34,13 @@ TB="$NDK/toolchains/llvm/prebuilt/$HOST/bin"
 # kopyada (yardimcilar/) yardimcilar/cikti/<abi>/. Derleme bayraklari ikisinde ayni.
 JL="$J/../../src/main/jniLibs"
 [ -d "$JL" ] || JL="$J/../cikti"
-for ABI in arm64-v8a armeabi-v7a; do
-  case "$ABI" in
-    arm64-v8a)   HEDEF=aarch64-linux-android21 ;;
-    armeabi-v7a) HEDEF=armv7a-linux-androideabi21 ;;
-  esac
+for IS in "aarch64-linux-android21 arm64-v8a libvokoderyardimci.so" \
+          "armv7a-linux-androideabi21 armeabi-v7a libvokoderyardimci.so" \
+          "x86_64-linux-android21 arm64-v8a libvokoderyardimci_x86_64.so"; do
+  set -- $IS
+  HEDEF=$1; ABI=$2; AD=$3
   mkdir -p "$JL/$ABI"
-  CIKTI="$JL/$ABI/libvokoderyardimci.so"
+  CIKTI="$JL/$ABI/$AD"
   "$TB/clang$X" --target=$HEDEF -O2 -fPIE -pie -Wall \
     -ffile-prefix-map="$J"=. \
     -Wl,--gc-sections -Wl,-z,max-page-size=16384 \
